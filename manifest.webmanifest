@@ -1,0 +1,14 @@
+{
+  "name": "Task Manager",
+  "short_name": "Tasks",
+  "description": "Ein schneller, offline-fähiger Task Manager.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7fb",
+  "theme_color": "#4f46e5",
+  "lang": "de",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
