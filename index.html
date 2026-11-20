@@ -3,108 +3,52 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Task Manager</title>
-  <meta name="description" content="Ein schneller, offline-fähiger Task Manager." />
-  <meta name="theme-color" content="#4f46e5" />
+  <title>Quest</title>
+  <meta name="description" content="Fokus, Zeitmessung und Wochen-Review – ein Task Manager für deine großen Ziele." />
+  <meta name="theme-color" content="#0a0a0b" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icon.svg" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="Tasks" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Quest" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="app" id="app">
-    <aside class="sidebar" id="sidebar">
-      <div class="brand">
-        <img src="icon.svg" alt="" width="28" height="28" />
-        <span>Task Manager</span>
-      </div>
+  <header class="topnav" id="topnav">
+    <button class="logo" data-act="go" data-view="home" aria-label="Home"><span class="ring"></span></button>
+    <nav class="tabs" id="tabs">
+      <button data-act="go" data-view="home">Home</button>
+      <button data-act="go" data-view="plan">Plan</button>
+      <button data-act="go" data-view="calendar">Kalender</button>
+      <button data-act="go" data-view="focus">Fokus</button>
+      <button data-act="go" data-view="quests">Quests</button>
+      <button data-act="go" data-view="review">Review</button>
+    </nav>
+    <span class="mobile-title" id="mobile-title"></span>
+    <div class="nav-right">
+      <button class="searchbtn" data-act="palette"><span>⌕</span><span class="lbl">Suchen oder springen…</span><kbd>⌘K</kbd></button>
+      <button class="syncdot" id="syncdot" data-act="settings" title="Synchronisierung"><span></span></button>
+      <button class="avatar" data-act="settings" title="Einstellungen">⚙</button>
+    </div>
+  </header>
 
-      <nav class="nav" id="nav-main">
-        <button class="nav-item" data-view="inbox"><span class="ico">📥</span>Eingang<span class="count" data-count="inbox"></span></button>
-        <button class="nav-item" data-view="today"><span class="ico">☀️</span>Heute<span class="count" data-count="today"></span></button>
-        <button class="nav-item" data-view="upcoming"><span class="ico">📅</span>Demnächst<span class="count" data-count="upcoming"></span></button>
-        <button class="nav-item" data-view="all"><span class="ico">🗂️</span>Alle Aufgaben<span class="count" data-count="all"></span></button>
-        <button class="nav-item" data-view="done"><span class="ico">✅</span>Erledigt</button>
-        <button class="nav-item" data-view="stats"><span class="ico">📊</span>Statistik</button>
-      </nav>
+  <main id="view" class="view"></main>
 
-      <div class="nav-section">
-        <div class="nav-heading">
-          <span>Projekte</span>
-          <button class="icon-btn" id="add-project" title="Neues Projekt">＋</button>
-        </div>
-        <nav class="nav" id="nav-projects"></nav>
-      </div>
-
-      <div class="nav-section">
-        <div class="nav-heading"><span>Tags</span></div>
-        <nav class="nav tags" id="nav-tags"></nav>
-      </div>
-
-      <div class="sidebar-footer">
-        <button class="ghost-btn" id="theme-toggle" title="Hell/Dunkel">🌓 Design</button>
-        <button class="ghost-btn" id="export-btn" title="Daten exportieren">⬇️ Export</button>
-        <label class="ghost-btn" title="Daten importieren">⬆️ Import<input type="file" id="import-input" accept="application/json" hidden /></label>
-        <button class="ghost-btn" id="help-btn" title="Tastenkürzel">⌨️ Hilfe</button>
-      </div>
-    </aside>
-
-    <div class="backdrop" id="backdrop"></div>
-
-    <main class="main">
-      <header class="topbar">
-        <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menü">☰</button>
-        <div class="title-wrap">
-          <h1 id="view-title">Eingang</h1>
-          <div class="subtitle" id="view-subtitle"></div>
-        </div>
-        <div class="toolbar">
-          <div class="search">
-            <span>🔍</span>
-            <input id="search" type="search" placeholder="Suchen… ( / )" autocomplete="off" />
-          </div>
-          <select id="sort" title="Sortierung">
-            <option value="manual">Manuell</option>
-            <option value="due">Fälligkeit</option>
-            <option value="priority">Priorität</option>
-            <option value="created">Erstellt</option>
-            <option value="title">Titel</option>
-          </select>
-          <div class="seg" id="layout-toggle">
-            <button data-layout="list" title="Liste">☰ Liste</button>
-            <button data-layout="board" title="Board">▦ Board</button>
-          </div>
-          <button class="icon-btn danger-hover" id="project-menu" title="Projekt bearbeiten" hidden>⋯</button>
-        </div>
-      </header>
-
-      <form class="quick-add" id="quick-add" autocomplete="off">
-        <input id="quick-input" placeholder="Neue Aufgabe…  z. B. „Bericht schreiben morgen #arbeit !1 @Projekt“" />
-        <button type="submit" class="primary-btn">Hinzufügen</button>
-      </form>
-      <div class="quick-hint" id="quick-hint">Tipp: <b>heute</b>, <b>morgen</b>, <b>montag</b>, <b>24.12.</b> · <b>#tag</b> · <b>!1</b> (hoch) bis <b>!3</b> · <b>@Projekt</b></div>
-
-      <section class="content" id="content"></section>
-    </main>
-
-    <aside class="detail" id="detail" aria-hidden="true"></aside>
-  </div>
-
-  <nav class="bottom-nav" id="bottom-nav" aria-label="Navigation">
-    <button data-view="inbox"><span>📥</span>Eingang</button>
-    <button data-view="today"><span>☀️</span>Heute</button>
-    <button class="fab" id="fab" aria-label="Neue Aufgabe"><span>＋</span></button>
-    <button data-view="upcoming"><span>📅</span>Demnächst</button>
-    <button id="more-btn"><span>☰</span>Mehr</button>
+  <nav class="bottomnav" id="bottomnav">
+    <button data-act="go" data-view="home"><span>◐</span>Home</button>
+    <button data-act="go" data-view="plan"><span>▦</span>Plan</button>
+    <button data-act="go" data-view="calendar"><span>◷</span>Kalender</button>
+    <button data-act="go" data-view="focus"><span>◎</span>Fokus</button>
+    <button data-act="go" data-view="quests"><span>✦</span>Quests</button>
+    <button data-act="go" data-view="review"><span>↗</span>Review</button>
   </nav>
 
+  <div class="runbar" id="runbar" hidden></div>
   <div class="toast" id="toast" role="status"></div>
-
   <dialog id="dialog"></dialog>
+  <div class="palette" id="palette" hidden></div>
 
   <script src="app.js"></script>
 </body>

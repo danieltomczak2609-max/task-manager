@@ -1,847 +1,1084 @@
-/* Task Manager – Vanilla JS, speichert alles lokal im Browser (localStorage). */
+/* Quest – Task Manager mit Fokus-Timer, Zeitmessung, Wochen-Review und Sync. */
 (() => {
   'use strict';
 
-  // ---------- Helpers ----------
-  const $ = (sel, root = document) => root.querySelector(sel);
-  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+  // ================= Helpers =================
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad = (n) => String(n).padStart(2, '0');
   const toISO = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const todayISO = () => toISO(new Date());
-  const addDays = (iso, n) => { const d = fromISO(iso); d.setDate(d.getDate() + n); return toISO(d); };
   const fromISO = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
-  const daysBetween = (a, b) => Math.round((fromISO(b) - fromISO(a)) / 86400000);
-  const WEEKDAYS = ['sonntag', 'montag', 'dienstag', 'mittwoch', 'donnerstag', 'freitag', 'samstag'];
-  const WD_SHORT = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
-  const MONTHS = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
-  const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6', '#6366f1', '#a855f7', '#ec4899', '#64748b'];
-  const PRIO_LABEL = { 0: 'Keine', 1: 'Hoch', 2: 'Mittel', 3: 'Niedrig' };
-  const STATUS_LABEL = { todo: 'Offen', doing: 'In Arbeit', done: 'Erledigt' };
-  const REC_LABEL = { none: 'Keine', daily: 'Täglich', weekdays: 'Werktags', weekly: 'Wöchentlich', monthly: 'Monatlich', yearly: 'Jährlich' };
+  const addDays = (iso, n) => { const d = fromISO(iso); d.setDate(d.getDate() + n); return toISO(d); };
+  const todayISO = () => toISO(new Date());
+  const now = () => Date.now();
+  const WD = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+  const WD_LONG = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+  const MON = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
+  const MON_LONG = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+  const QCOLORS = ['#a78bfa', '#c3e66e', '#f0866b', '#60a5fa', '#5eead4', '#f472b6', '#facc15', '#fb923c'];
+  const QICONS = ['✦', '🚀', '🎬', '💪', '📚', '💼', '❤️', '🏠', '🎯', '💡', '🎵', '✍️'];
+  const HOUR_PX = 44;
 
-  function fmtDue(iso) {
-    if (!iso) return '';
-    const t = todayISO();
-    const diff = daysBetween(t, iso);
-    if (diff === 0) return 'Heute';
-    if (diff === 1) return 'Morgen';
-    if (diff === -1) return 'Gestern';
-    const d = fromISO(iso);
-    if (diff > 1 && diff < 7) return WD_SHORT[d.getDay()] + ', ' + d.getDate() + '. ' + MONTHS[d.getMonth()];
-    const sameYear = d.getFullYear() === new Date().getFullYear();
-    return `${d.getDate()}. ${MONTHS[d.getMonth()]}${sameYear ? '' : ' ' + d.getFullYear()}`;
+  const weekStart = (iso) => { const d = fromISO(iso); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return toISO(d); };
+  const dayStartMs = (iso) => fromISO(iso).getTime();
+  const dayRange = (iso) => [dayStartMs(iso), dayStartMs(addDays(iso, 1))];
+  const weekRange = (ws) => [dayStartMs(ws), dayStartMs(addDays(ws, 7))];
+  function fmtDur(ms) {
+    const m = Math.floor(Math.max(0, ms) / 60000), h = Math.floor(m / 60);
+    return h ? `${h}h ${m % 60}m` : `${m}m`;
   }
-  function dueClass(iso) {
-    if (!iso) return '';
-    const diff = daysBetween(todayISO(), iso);
-    return diff < 0 ? 'overdue' : diff === 0 ? 'today' : '';
+  function fmtClock(ms) {
+    const s = Math.floor(Math.max(0, ms) / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
   }
-
-  // ---------- State ----------
-  const KEY = 'taskmanager.v1';
-  let state = load();
-  let ui = {
-    view: 'inbox', // inbox | today | upcoming | all | done | stats | project:<id> | tag:<name>
-    layout: localStorage.getItem('taskmanager.layout') || 'list',
-    sort: 'manual',
-    search: '',
-    selected: null,
+  const fmtHM = (ts) => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const fmtRange = (ws) => {
+    const a = fromISO(ws), b = fromISO(addDays(ws, 6));
+    return a.getMonth() === b.getMonth() ? `${a.getDate()}.–${b.getDate()}. ${MON[a.getMonth()]}` : `${a.getDate()}. ${MON[a.getMonth()]} – ${b.getDate()}. ${MON[b.getMonth()]}`;
   };
-  try { Object.assign(ui, JSON.parse(localStorage.getItem('taskmanager.ui') || '{}'), { search: '', selected: null }); } catch {}
+  const longDate = (iso) => { const d = fromISO(iso); return `${WD_LONG[d.getDay()]}, ${d.getDate()}. ${MON_LONG[d.getMonth()]}`; };
 
-  function defaultState() {
-    const p1 = { id: uid(), name: 'Privat', color: '#22c55e' };
-    const p2 = { id: uid(), name: 'Arbeit', color: '#3b82f6' };
-    const t = todayISO();
-    const mk = (o, i) => ({
-      id: uid(), title: '', notes: '', projectId: null, due: null, priority: 0, tags: [], subtasks: [],
-      status: 'todo', recurrence: 'none', createdAt: Date.now() - i * 1000, completedAt: null, order: i, ...o,
-    });
-    return {
-      version: 1,
-      projects: [p1, p2],
-      tasks: [
-        mk({ title: 'Willkommen! Klick mich an, um Details zu sehen 👋', notes: 'Hier kannst du Notizen, Unteraufgaben, Fälligkeit, Priorität, Tags und Wiederholung festlegen.\n\nTastenkürzel: N = neue Aufgabe, / = Suchen, ? = Hilfe.', subtasks: [{ id: uid(), title: 'Aufgabe abhaken', done: false }, { id: uid(), title: 'Board-Ansicht ausprobieren', done: false }] }, 0),
-        mk({ title: 'Wocheneinkauf erledigen', projectId: p1.id, due: t, priority: 2, tags: ['einkauf'], recurrence: 'weekly' }, 1),
-        mk({ title: 'Präsentation vorbereiten', projectId: p2.id, due: addDays(t, 2), priority: 1, tags: ['meeting'], status: 'doing' }, 2),
-        mk({ title: 'E-Mails beantworten', projectId: p2.id, due: t, priority: 3, recurrence: 'weekdays' }, 3),
-      ],
-      settings: { theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light' },
-    };
-  }
-  function load() {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (raw) return migrate(JSON.parse(raw));
-    } catch (e) { console.warn('Konnte Daten nicht laden', e); }
-    return defaultState();
-  }
-  function migrate(s) {
-    s.projects ||= []; s.tasks ||= []; s.settings ||= { theme: 'light' };
-    s.tasks.forEach((t, i) => {
-      t.tags ||= []; t.subtasks ||= []; t.status ||= (t.done ? 'done' : 'todo');
-      t.recurrence ||= 'none'; t.priority ??= 0; t.order ??= i; t.notes ??= '';
-      delete t.done;
-    });
+  // ================= State =================
+  const KEY = 'quest.v1';
+  const COLLS = ['quests', 'tasks', 'sessions', 'recurring', 'reviews'];
+  const emptyState = () => ({ v: 1, quests: [], tasks: [], sessions: [], recurring: [], reviews: [], settings: { id: 'settings', weeklyTarget: 20, updatedAt: 0 }, deleted: {} });
+
+  function normalize(s) {
+    const e = emptyState();
+    s = { ...e, ...(s || {}) };
+    COLLS.forEach((c) => { if (!Array.isArray(s[c])) s[c] = []; });
+    s.settings = { ...e.settings, ...(s.settings || {}) };
+    s.deleted ||= {};
     return s;
   }
-  let saveTimer;
-  function save() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      try { localStorage.setItem(KEY, JSON.stringify(state)); }
-      catch (e) { toast('Speichern fehlgeschlagen: ' + e.message); }
-    }, 80);
+
+  function migrateOld() {
+    // Übernimmt Aufgaben aus der ersten App-Version (Projekte → Quests)
+    try {
+      const raw = localStorage.getItem('taskmanager.v1');
+      if (!raw) return null;
+      const old = JSON.parse(raw);
+      const DEMO = ['Willkommen! Klick mich an, um Details zu sehen 👋', 'Wocheneinkauf erledigen', 'Präsentation vorbereiten', 'E-Mails beantworten'];
+      const tasks = (old.tasks || []).filter((t) => !DEMO.includes(t.title));
+      if (!tasks.length) return null;
+      const s = emptyState();
+      const used = new Set(tasks.map((t) => t.projectId).filter(Boolean));
+      (old.projects || []).filter((p) => used.has(p.id)).forEach((p, i) => s.quests.push({
+        id: p.id, name: p.name, description: '', color: QCOLORS[i % QCOLORS.length], icon: QICONS[i % QICONS.length], status: 'active', order: i, createdAt: now(),
+      }));
+      tasks.forEach((t, i) => s.tasks.push({
+        id: t.id, title: t.title, notes: t.notes || '', questId: t.projectId || null, date: t.due || null,
+        done: t.status === 'done', doneAt: t.completedAt || null, order: i, createdAt: t.createdAt || now(),
+      }));
+      return s;
+    } catch { return null; }
   }
-  function saveUI() {
-    localStorage.setItem('taskmanager.ui', JSON.stringify({ view: ui.view, sort: ui.sort, layout: ui.layout }));
+
+  function load() {
+    try { const raw = localStorage.getItem(KEY); if (raw) return normalize(JSON.parse(raw)); } catch (e) { console.warn(e); }
+    return normalize(migrateOld() || emptyState());
   }
+
+  let state = load();
+  const ui = Object.assign({
+    view: 'home', planStart: null, calWeek: null, reviewWeek: null, questTab: 'active', addPos: 'top', showDone: false, focusPick: null, lastQuest: null,
+  }, (() => { try { return JSON.parse(localStorage.getItem('quest.ui') || '{}'); } catch { return {}; } })());
+  ui.planStart = null; ui.calWeek = null; ui.reviewWeek = null;
+  const saveUI = () => localStorage.setItem('quest.ui', JSON.stringify({ view: ui.view, questTab: ui.questTab, addPos: ui.addPos, lastQuest: ui.lastQuest }));
+
+  // ---------- Change stamping (for sync) ----------
+  let snap = new Map();
+  const itemJSON = (it) => { const { updatedAt, ...rest } = it; return JSON.stringify(rest); };
+  const allItems = () => [...COLLS.flatMap((c) => state[c]), state.settings];
+  function stamp(init = false) {
+    const t = now(); let changed = false; const seen = new Set();
+    for (const it of allItems()) {
+      seen.add(it.id);
+      const j = itemJSON(it);
+      if (snap.get(it.id) === j) continue;
+      if (snap.has(it.id) || !it.updatedAt) it.updatedAt = t;
+      if (!init && state.deleted[it.id]) { delete state.deleted[it.id]; it.updatedAt = t; }
+      if (!init) changed = true;
+      snap.set(it.id, j);
+    }
+    for (const id of [...snap.keys()]) if (!seen.has(id)) { state.deleted[id] = t; snap.delete(id); changed = true; }
+    for (const [id, ts] of Object.entries(state.deleted)) if (t - ts > 120 * 86400000) delete state.deleted[id];
+    return changed;
+  }
+  function resetSnap() { snap = new Map(); for (const it of allItems()) snap.set(it.id, itemJSON(it)); }
+  function persist() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { toast('Speichern fehlgeschlagen: ' + e.message); } }
+  let saveT;
+  function save() { clearTimeout(saveT); saveT = setTimeout(() => { if (stamp()) scheduleSync(); persist(); }, 60); }
   function commit() { save(); render(); }
 
+  // ================= Domain =================
   const getTask = (id) => state.tasks.find((t) => t.id === id);
-  const getProject = (id) => state.projects.find((p) => p.id === id);
-  const isDone = (t) => t.status === 'done';
+  const getQuest = (id) => state.quests.find((q) => q.id === id);
+  const activeQuests = () => state.quests.filter((q) => q.status !== 'completed').sort((a, b) => a.order - b.order);
+  const qColor = (qid) => getQuest(qid)?.color || '#4a4a52';
+  const running = () => state.sessions.find((s) => s.end == null);
+  const sEnd = (s) => (s.end == null ? now() : s.end);
+  const sQuest = (s) => { const t = getTask(s.taskId); return t ? t.questId : s.questId; };
+  const overlap = (s, a, b) => Math.max(0, Math.min(sEnd(s), b) - Math.max(s.start, a));
+  const taskTime = (id) => state.sessions.reduce((sum, s) => sum + (s.taskId === id ? sEnd(s) - s.start : 0), 0);
+  function timeIn(a, b, pred = () => true) { return state.sessions.reduce((sum, s) => sum + (pred(s) ? overlap(s, a, b) : 0), 0); }
+  const isQuestSession = (s) => { const q = sQuest(s); return !!(q && getQuest(q)); };
+  const questTimeIn = (a, b) => timeIn(a, b, isQuestSession);
 
-  // ---------- Quick-add parsing ----------
-  function parseQuick(text) {
-    let title = ' ' + text + ' ';
-    const out = { tags: [], priority: 0, due: null, projectId: null };
-    title = title.replace(/\s#([\p{L}\p{N}_-]+)/gu, (_, tag) => { out.tags.push(tag.toLowerCase()); return ' '; });
-    title = title.replace(/\s!([1-3])(?=\s)/g, (_, p) => { out.priority = Number(p); return ' '; });
-    title = title.replace(/\s@([\p{L}\p{N}_-]+)/gu, (m, name) => {
-      const p = state.projects.find((x) => x.name.toLowerCase() === name.toLowerCase())
-        || state.projects.find((x) => x.name.toLowerCase().startsWith(name.toLowerCase()));
-      if (p) { out.projectId = p.id; return ' '; }
+  function tasksOn(iso, filter = () => true) {
+    return state.tasks.filter((t) => t.date === iso && filter(t)).sort((a, b) => (a.done - b.done) || a.order - b.order);
+  }
+  function orderFor(date, pos) {
+    const list = state.tasks.filter((t) => t.date === date);
+    if (!list.length) return 0;
+    return pos === 'bottom' ? Math.max(...list.map((t) => t.order)) + 1 : Math.min(...list.map((t) => t.order)) - 1;
+  }
+  function parseQuestTag(text) {
+    let questId = null;
+    const title = text.replace(/(^|\s)#([\p{L}\p{N}_-]+)/gu, (m, sp, name) => {
+      const n = name.toLowerCase();
+      const q = activeQuests().find((x) => x.name.toLowerCase().replace(/\s+/g, '') === n) || activeQuests().find((x) => x.name.toLowerCase().startsWith(n));
+      if (q) { questId = q.id; return sp; }
       return m;
-    });
-    const t = todayISO();
-    const rules = [
-      [/\s(heute)(?=\s)/i, () => t],
-      [/\s(übermorgen)(?=\s)/i, () => addDays(t, 2)],
-      [/\s(morgen)(?=\s)/i, () => addDays(t, 1)],
-      [/\s(nächste woche)(?=\s)/i, () => addDays(t, 7)],
-      [/\s(?:am\s)?(montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)(?=\s)/i, (m) => {
-        const target = WEEKDAYS.indexOf(m[1].toLowerCase());
-        let diff = (target - new Date().getDay() + 7) % 7; if (diff === 0) diff = 7;
-        return addDays(t, diff);
-      }],
-      [/\s(?:am\s)?(\d{1,2})\.(\d{1,2})\.(\d{2,4})?(?=\s)/, (m) => {
-        const now = new Date();
-        let y = m[3] ? Number(m[3]) : now.getFullYear(); if (y < 100) y += 2000;
-        const d = new Date(y, Number(m[2]) - 1, Number(m[1]));
-        if (isNaN(d) || d.getMonth() !== Number(m[2]) - 1) return null;
-        if (!m[3] && toISO(d) < t) d.setFullYear(y + 1);
-        return toISO(d);
-      }],
-    ];
-    for (const [re, fn] of rules) {
-      const m = title.match(re);
-      if (m) { const v = fn(m); if (v) { out.due = v; title = title.replace(re, ' '); break; } }
-    }
-    out.title = title.replace(/\s+/g, ' ').trim();
-    return out;
+    }).replace(/\s+/g, ' ').trim();
+    return { title, questId };
   }
-
-  // ---------- Task operations ----------
-  function addTask(partial) {
-    const minOrder = Math.min(0, ...state.tasks.map((t) => t.order));
-    const task = {
-      id: uid(), title: '', notes: '', projectId: null, due: null, priority: 0, tags: [], subtasks: [],
-      status: 'todo', recurrence: 'none', createdAt: Date.now(), completedAt: null, order: minOrder - 1, ...partial,
-    };
-    // Kontext der aktuellen Ansicht übernehmen
-    if (!partial.projectId && ui.view.startsWith('project:')) task.projectId = ui.view.slice(8);
-    if (!partial.due && ui.view === 'today') task.due = todayISO();
-    if (ui.view.startsWith('tag:')) { const tg = ui.view.slice(4); if (!task.tags.includes(tg)) task.tags.push(tg); }
-    state.tasks.push(task);
+  function addTask({ title, questId = null, date = todayISO(), pos = ui.addPos }) {
+    const t = { id: uid(), title, notes: '', questId, date, done: false, doneAt: null, order: orderFor(date, pos), createdAt: now() };
+    state.tasks.push(t);
+    if (questId) ui.lastQuest = questId;
     commit();
-    return task;
+    return t;
   }
 
-  function nextDue(iso, rec) {
-    const base = iso || todayISO();
-    const d = fromISO(base);
-    switch (rec) {
-      case 'daily': d.setDate(d.getDate() + 1); break;
-      case 'weekdays': do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); break;
-      case 'weekly': d.setDate(d.getDate() + 7); break;
-      case 'monthly': { const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + 1); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); break; }
-      case 'yearly': d.setFullYear(d.getFullYear() + 1); break;
-      default: return null;
-    }
-    return toISO(d);
+  // Timer
+  function startTask(id) {
+    const t = getTask(id); if (!t) return;
+    const r = running();
+    if (r) { if (r.taskId === id) return; stopSession(r); }
+    if (t.done) { t.done = false; t.doneAt = null; }
+    if (!t.date || t.date < todayISO()) t.date = todayISO();
+    state.sessions.push({ id: uid(), taskId: id, questId: t.questId || null, start: now(), end: null });
+    commit();
   }
-
+  function stopSession(s) {
+    s.end = now();
+    if (s.end - s.start < 5000) state.sessions = state.sessions.filter((x) => x !== s); // versehentliche Klicks verwerfen
+  }
+  function pauseTimer() { const r = running(); if (r) { stopSession(r); commit(); } }
+  function completeTask(id) {
+    const t = getTask(id); if (!t) return;
+    const r = running(); if (r && r.taskId === id) stopSession(r);
+    t.done = true; t.doneAt = now();
+    if (!t.date) t.date = todayISO();
+    const time = taskTime(id);
+    commit();
+    toast(`✓ Erledigt${time ? ' · ' + fmtDur(time) : ''}`, () => { t.done = false; t.doneAt = null; commit(); });
+  }
   function toggleDone(id) {
     const t = getTask(id); if (!t) return;
-    if (!isDone(t) && t.recurrence !== 'none') {
-      // Wiederkehrend: erledigte Kopie archivieren, Original auf nächsten Termin schieben
-      state.tasks.push({ ...structuredClone(t), id: uid(), status: 'done', completedAt: Date.now(), recurrence: 'none' });
-      t.due = nextDue(t.due, t.recurrence);
-      t.subtasks.forEach((s) => (s.done = false));
-      t.status = 'todo';
-      commit();
-      toast(`🔁 Erledigt – nächster Termin: ${fmtDue(t.due)}`);
-      return;
-    }
-    if (isDone(t)) { t.status = 'todo'; t.completedAt = null; }
-    else { t.status = 'done'; t.completedAt = Date.now(); toast('✅ Erledigt', () => { t.status = 'todo'; t.completedAt = null; commit(); }); }
-    commit();
+    if (t.done) { t.done = false; t.doneAt = null; commit(); } else completeTask(id);
   }
-
   function deleteTask(id) {
     const idx = state.tasks.findIndex((t) => t.id === id); if (idx < 0) return;
-    const [removed] = state.tasks.splice(idx, 1);
-    if (ui.selected === id) closeDetail();
+    const [t] = state.tasks.splice(idx, 1);
+    const r = running(); if (r && r.taskId === id) stopSession(r);
     commit();
-    toast('🗑️ Aufgabe gelöscht', () => { state.tasks.splice(idx, 0, removed); commit(); });
+    toast('Aufgabe gelöscht', () => { state.tasks.splice(idx, 0, t); commit(); });
   }
 
-  function duplicateTask(id) {
-    const t = getTask(id); if (!t) return;
-    const copy = { ...structuredClone(t), id: uid(), title: t.title + ' (Kopie)', createdAt: Date.now(), status: 'todo', completedAt: null, order: t.order + 0.5 };
-    copy.subtasks.forEach((s) => (s.id = uid()));
-    state.tasks.push(copy);
-    normalizeOrder();
-    commit();
-    openDetail(copy.id);
+  // Wiederkehrende Aufgaben (gleiche ID auf allen Geräten → keine Duplikate beim Sync)
+  function ensureRecurring(fromISO_, toISO_) {
+    let added = false;
+    const start = fromISO_ < todayISO() ? todayISO() : fromISO_;
+    for (const r of state.recurring) {
+      const since = toISO(new Date(r.createdAt || 0));
+      for (let d = start; d <= toISO_; d = addDays(d, 1)) {
+        if (d < since || !r.days.includes(fromISO(d).getDay())) continue;
+        const id = `r_${r.id}_${d}`;
+        if (state.deleted[id] || getTask(id)) continue;
+        state.tasks.push({ id, title: r.title, notes: '', questId: r.questId || null, date: d, done: false, doneAt: null, order: -1000 + (r.order || 0), recurringId: r.id, createdAt: now() });
+        added = true;
+      }
+    }
+    if (added) save();
   }
 
-  function normalizeOrder() {
-    [...state.tasks].sort((a, b) => a.order - b.order).forEach((t, i) => (t.order = i));
-  }
-
-  // ---------- Filtering ----------
-  function baseFilter(view) {
-    const t = todayISO();
-    if (view === 'inbox') return (x) => !x.projectId && !isDone(x);
-    if (view === 'today') return (x) => !isDone(x) && x.due && x.due <= t;
-    if (view === 'upcoming') return (x) => !isDone(x) && x.due && x.due > t;
-    if (view === 'all') return (x) => !isDone(x);
-    if (view === 'done') return (x) => isDone(x);
-    if (view.startsWith('project:')) { const id = view.slice(8); return (x) => x.projectId === id; }
-    if (view.startsWith('tag:')) { const tg = view.slice(4); return (x) => x.tags.includes(tg); }
-    return () => false;
-  }
-  function matchesSearch(x, q) {
-    if (!q) return true;
-    q = q.toLowerCase();
-    const p = getProject(x.projectId);
-    return [x.title, x.notes, ...x.tags.map((t) => '#' + t), p?.name, ...x.subtasks.map((s) => s.title)]
-      .some((s) => s && s.toLowerCase().includes(q));
-  }
-  function sortTasks(arr) {
-    const s = ui.sort;
-    const prio = (x) => (x.priority === 0 ? 9 : x.priority);
-    const cmp = {
-      manual: (a, b) => a.order - b.order,
-      due: (a, b) => (a.due || '9999').localeCompare(b.due || '9999') || prio(a) - prio(b) || a.order - b.order,
-      priority: (a, b) => prio(a) - prio(b) || (a.due || '9999').localeCompare(b.due || '9999'),
-      created: (a, b) => b.createdAt - a.createdAt,
-      title: (a, b) => a.title.localeCompare(b.title, 'de'),
-    }[s] || ((a, b) => a.order - b.order);
-    return arr.sort(cmp);
-  }
-  function visibleTasks(view = ui.view) {
-    // Suche durchsucht immer alle Aufgaben
-    const f = ui.search ? () => true : baseFilter(view);
-    return sortTasks(state.tasks.filter((x) => f(x) && matchesSearch(x, ui.search)));
-  }
-
-  // ---------- Rendering ----------
+  // ================= Rendering =================
+  const TITLES = { home: 'Home', plan: 'Plan', calendar: 'Kalender', focus: 'Fokus', quests: 'Quests', review: 'Review' };
   function render() {
-    document.documentElement.dataset.theme = state.settings.theme;
-    renderSidebar();
-    renderHeader();
-    renderContent();
-    if (ui.selected) renderDetail();
+    const v = ui.view;
+    $$('[data-act="go"]').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
+    $('#mobile-title').textContent = TITLES[v] || '';
+    const view = $('#view');
+    const keepScroll = view.querySelector('.cal-wrap, .timeline-card');
+    const sc = keepScroll ? keepScroll.scrollTop : null;
+    const planSc = view.querySelector('.plan-scroll')?.scrollLeft;
+    view.innerHTML = ({ home: renderHome, plan: renderPlan, calendar: renderCalendar, focus: renderFocus, quests: renderQuests, review: renderReview }[v] || renderHome)();
+    const wrap = view.querySelector('.cal-wrap, .timeline-card');
+    if (wrap) wrap.scrollTop = sc ?? Math.max(0, 7 * HOUR_PX - 10);
+    const ps = view.querySelector('.plan-scroll'); if (ps && planSc != null) ps.scrollLeft = planSc;
+    renderRunbar();
+    tick();
   }
 
-  function renderSidebar() {
-    const counts = {
-      inbox: state.tasks.filter(baseFilter('inbox')).length,
-      today: state.tasks.filter(baseFilter('today')).length,
-      upcoming: state.tasks.filter(baseFilter('upcoming')).length,
-      all: state.tasks.filter(baseFilter('all')).length,
-    };
-    $$('[data-count]').forEach((el) => (el.textContent = counts[el.dataset.count] || ''));
-    $$('#nav-main .nav-item, #bottom-nav [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === ui.view && !ui.search));
-
-    const projNav = $('#nav-projects');
-    projNav.innerHTML = state.projects.length
-      ? state.projects.map((p) => {
-        const n = state.tasks.filter((t) => t.projectId === p.id && !isDone(t)).length;
-        return `<button class="nav-item${ui.view === 'project:' + p.id && !ui.search ? ' active' : ''}" data-view="project:${p.id}" data-project-drop="${p.id}">
-          <span class="dot" style="background:${esc(p.color)}"></span><span class="name">${esc(p.name)}</span><span class="count">${n || ''}</span></button>`;
-      }).join('')
-      : '<div class="empty-small">Noch keine Projekte</div>';
-
-    const tags = [...new Set(state.tasks.flatMap((t) => t.tags))].sort();
-    $('#nav-tags').innerHTML = tags.length
-      ? tags.map((t) => `<span class="tag${ui.view === 'tag:' + t ? ' active' : ''}" data-view="tag:${esc(t)}">#${esc(t)}</span>`).join('')
-      : '<div class="empty-small">Tags mit #name beim Erstellen</div>';
+  function taskCard(t, opts = {}) {
+    const q = getQuest(t.questId);
+    const r = running(); const isRun = r && r.taskId === t.id;
+    const time = taskTime(t.id);
+    return `<div class="tcard${t.done ? ' done' : ''}${isRun ? ' running' : ''}" data-task="${t.id}" draggable="true" style="--qc:${q ? q.color : '#3a3a40'}">
+      <div class="tc-title" data-act="edit-task" data-id="${t.id}">${esc(t.title) || '<i>Ohne Titel</i>'}</div>
+      <div class="tc-meta">
+        <button class="chk${t.done ? ' on' : ''}" data-act="toggle" data-id="${t.id}" aria-label="Erledigt">✓</button>
+        ${opts.noQuest ? '' : `<span class="qchip"><i></i>${q ? esc(q.name) : 'Keine Quest'}</span>`}
+        ${time || isRun ? `<span class="ttime"><i></i><span data-live-task="${t.id}">${isRun ? fmtClock(time) : fmtDur(time)}</span></span>` : ''}
+        ${t.recurringId ? '<span class="rec" title="Wiederkehrend">↻</span>' : ''}
+        <span class="sp"></span>
+        ${t.done ? '' : isRun ? `<button class="iconb" data-act="pause" title="Pausieren">❚❚</button>` : `<button class="iconb" data-act="start" data-id="${t.id}" title="Timer starten">▶</button>`}
+      </div></div>`;
   }
 
-  function viewTitle() {
-    if (ui.search) return ['Suche', `Ergebnisse für „${ui.search}“`];
-    const map = {
-      inbox: ['Eingang', 'Aufgaben ohne Projekt'],
-      today: ['Heute', new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })],
-      upcoming: ['Demnächst', 'Alles mit Termin in der Zukunft'],
-      all: ['Alle Aufgaben', 'Alle offenen Aufgaben'],
-      done: ['Erledigt', 'Abgeschlossene Aufgaben'],
-      stats: ['Statistik', 'Dein Fortschritt'],
-    };
-    if (map[ui.view]) return map[ui.view];
-    if (ui.view.startsWith('project:')) { const p = getProject(ui.view.slice(8)); return [p ? p.name : 'Projekt', 'Projekt']; }
-    if (ui.view.startsWith('tag:')) return ['#' + ui.view.slice(4), 'Tag'];
-    return ['', ''];
+  function addRow({ date, mode, placeholder }) {
+    const qs = activeQuests();
+    const sel = mode === 'quest' && qs.length
+      ? `<select data-role="quest" aria-label="Quest">${qs.map((q) => `<option value="${q.id}"${q.id === ui.lastQuest ? ' selected' : ''}>${esc(q.name)}</option>`).join('')}</select>` : '';
+    return `<form class="addrow" data-form="add" data-date="${date}" data-mode="${mode}">
+      <input placeholder="${esc(placeholder)}" maxlength="200" />
+      ${sel}
+      <span class="pos"><button type="button" data-act="pos" data-pos="top" class="${ui.addPos === 'top' ? 'on' : ''}">↑ Oben</button><button type="button" data-act="pos" data-pos="bottom" class="${ui.addPos === 'bottom' ? 'on' : ''}">↓ Unten</button></span>
+    </form>`;
   }
 
-  function renderHeader() {
-    const [title, sub] = viewTitle();
-    $('#view-title').textContent = title;
-    $('#view-subtitle').textContent = sub;
-    document.title = `${title} · Task Manager`;
-    $('#sort').value = ui.sort;
-    $$('#layout-toggle button').forEach((b) => b.classList.toggle('active', b.dataset.layout === ui.layout));
-    const isProject = ui.view.startsWith('project:') && !ui.search;
-    $('#project-menu').hidden = !isProject;
-    const hideAdd = ui.view === 'stats' || ui.view === 'done';
-    $('#quick-add').style.display = hideAdd ? 'none' : '';
-    $('#quick-hint').style.display = hideAdd ? 'none' : '';
-    $('#layout-toggle').style.display = ui.view === 'stats' ? 'none' : '';
-    $('#sort').style.display = ui.view === 'stats' ? 'none' : '';
+  function weekProgress() {
+    const ws = weekStart(todayISO());
+    const [a, b] = weekRange(ws);
+    const w = questTimeIn(a, b);
+    const target = (state.settings.weeklyTarget || 20) * 3600000;
+    return { w, target, pct: Math.min(100, (w / target) * 100) };
   }
 
-  function taskHTML(t) {
-    const p = getProject(t.projectId);
-    const subDone = t.subtasks.filter((s) => s.done).length;
-    const meta = [];
-    if (t.due) meta.push(`<span class="${isDone(t) ? '' : dueClass(t.due)}">📅 ${fmtDue(t.due)}</span>`);
-    if (t.recurrence !== 'none') meta.push(`<span title="Wiederholung">🔁 ${REC_LABEL[t.recurrence]}</span>`);
-    if (t.subtasks.length) meta.push(`<span>☑️ ${subDone}/${t.subtasks.length}</span>`);
-    if (t.notes) meta.push('<span title="Notizen">📝</span>');
-    if (t.status === 'doing' && ui.layout === 'list') meta.push('<span class="badge-status">In Arbeit</span>');
-    if (p && !ui.view.startsWith('project:')) meta.push(`<span class="proj-chip"><i style="background:${esc(p.color)}"></i>${esc(p.name)}</span>`);
-    t.tags.forEach((tg) => meta.push(`<span class="tag">#${esc(tg)}</span>`));
-    return `<div class="task${isDone(t) ? ' done' : ''}${ui.selected === t.id ? ' selected' : ''}" data-id="${t.id}" draggable="true">
-      <button class="check${isDone(t) ? ' checked' : ''}${t.priority ? ' p' + t.priority : ''}" data-action="toggle" title="Erledigt umschalten" aria-label="Erledigt"></button>
-      <div class="task-body">
-        <div class="task-title">${esc(t.title) || '<i>Ohne Titel</i>'}</div>
-        ${meta.length ? `<div class="meta">${meta.join('')}</div>` : ''}
-      </div>
-    </div>`;
-  }
-
-  function emptyHTML() {
-    const msgs = {
-      today: ['🎉', 'Nichts mehr für heute. Genieß den Tag!'],
-      done: ['📭', 'Noch nichts erledigt.'],
-      inbox: ['📥', 'Eingang ist leer.'],
-    };
-    const [ico, txt] = ui.search ? ['🔍', 'Keine Treffer.'] : (msgs[ui.view] || ['✨', 'Keine Aufgaben. Leg oben los!']);
-    return `<div class="empty"><div class="big">${ico}</div><p>${txt}</p></div>`;
-  }
-
-  function renderContent() {
-    const c = $('#content');
-    if (ui.view === 'stats' && !ui.search) { c.innerHTML = statsHTML(); return; }
-    const tasks = visibleTasks();
-    if (ui.layout === 'board' && ui.view !== 'done') { c.innerHTML = boardHTML(tasks); return; }
-    if (!tasks.length) { c.innerHTML = emptyHTML(); return; }
-
-    // Gruppierung
-    let groups;
-    if (ui.view === 'upcoming' && !ui.search) {
-      const m = new Map();
-      tasks.sort((a, b) => a.due.localeCompare(b.due) || a.order - b.order).forEach((t) => {
-        if (!m.has(t.due)) m.set(t.due, []); m.get(t.due).push(t);
-      });
-      groups = [...m].map(([d, arr]) => {
-        const date = fromISO(d);
-        return { title: `${fmtDue(d)} · ${date.toLocaleDateString('de-DE', { weekday: 'long' })}`, tasks: arr };
-      });
-    } else if (ui.view === 'today' && !ui.search) {
-      const t = todayISO();
-      const overdue = tasks.filter((x) => x.due < t);
-      const today = tasks.filter((x) => x.due === t);
-      groups = [];
-      if (overdue.length) groups.push({ title: 'Überfällig', cls: 'overdue', tasks: overdue });
-      if (today.length) groups.push({ title: 'Heute', tasks: today });
-    } else if (ui.view === 'done' && !ui.search) {
-      const m = new Map();
-      tasks.sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0)).forEach((t) => {
-        const k = t.completedAt ? toISO(new Date(t.completedAt)) : 'unbekannt';
-        if (!m.has(k)) m.set(k, []); m.get(k).push(t);
-      });
-      groups = [...m].map(([k, arr]) => ({ title: k === 'unbekannt' ? 'Unbekannt' : fmtDue(k), tasks: arr }));
-    } else if (ui.view.startsWith('project:') && !ui.search) {
-      const open = tasks.filter((x) => !isDone(x));
-      const done = tasks.filter(isDone);
-      groups = [{ title: '', tasks: open }];
-      if (done.length) groups.push({ title: `Erledigt (${done.length})`, tasks: done });
-    } else {
-      groups = [{ title: '', tasks }];
-    }
-    c.innerHTML = groups.map((g) => `<div class="group">
-      ${g.title ? `<div class="group-title ${g.cls || ''}">${esc(g.title)} <span>${g.tasks.length}</span></div>` : ''}
-      <div class="task-list">${g.tasks.map(taskHTML).join('')}</div></div>`).join('');
-  }
-
-  function boardHTML(tasks) {
-    // Im Board auch erledigte Aufgaben der Ansicht anzeigen (außer bei "Erledigt")
-    let all = tasks;
-    if (!ui.search && ui.view !== 'done') {
-      const f = baseFilter(ui.view);
-      const t = todayISO();
-      const doneMatches = state.tasks.filter((x) => isDone(x) && (
-        ui.view.startsWith('project:') || ui.view.startsWith('tag:') ? f(x)
-          : ui.view === 'inbox' ? !x.projectId
-            : ui.view === 'today' ? x.completedAt && toISO(new Date(x.completedAt)) === t
-              : ui.view === 'upcoming' ? x.due && x.due > t : true));
-      all = [...tasks.filter((x) => !isDone(x)), ...doneMatches.sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0)).slice(0, 30)];
-    }
-    const cols = ['todo', 'doing', 'done'];
-    return `<div class="board">${cols.map((s) => {
-      const list = all.filter((x) => x.status === s);
-      return `<div class="column" data-status="${s}"><h3>${STATUS_LABEL[s]} <span class="small-muted">${list.length}</span></h3>
-        <div class="task-list">${list.map(taskHTML).join('')}</div></div>`;
-    }).join('')}</div>`;
-  }
-
-  function statsHTML() {
-    const all = state.tasks;
-    const done = all.filter(isDone);
-    const open = all.filter((x) => !isDone(x));
+  // ---------- Home ----------
+  function renderHome() {
     const t = todayISO();
-    const overdue = open.filter((x) => x.due && x.due < t).length;
-    const doneToday = done.filter((x) => x.completedAt && toISO(new Date(x.completedAt)) === t).length;
-    const days = [...Array(14)].map((_, i) => addDays(t, i - 13));
-    const perDay = days.map((d) => done.filter((x) => x.completedAt && toISO(new Date(x.completedAt)) === d).length);
-    const max = Math.max(1, ...perDay);
-    let streak = 0;
-    for (let i = 0; ; i++) {
-      const d = addDays(t, -i);
-      const n = done.filter((x) => x.completedAt && toISO(new Date(x.completedAt)) === d).length;
-      if (n) streak++; else if (i > 0) break; else continue;
-      if (i > 3650) break;
-    }
-    const projRows = state.projects.map((p) => {
-      const ts = all.filter((x) => x.projectId === p.id);
-      const d = ts.filter(isDone).length;
-      const pct = ts.length ? Math.round((d / ts.length) * 100) : 0;
-      return `<div style="margin:10px 0"><div style="display:flex;justify-content:space-between"><span class="proj-chip"><i style="background:${esc(p.color)}"></i>${esc(p.name)}</span><span class="small-muted">${d}/${ts.length} · ${pct}%</span></div>
-        <div class="progress"><div style="width:${pct}%;background:${esc(p.color)}"></div></div></div>`;
-    }).join('') || '<div class="small-muted">Keine Projekte.</div>';
-    return `<div class="stats-grid">
-        <div class="stat"><div class="num">${open.length}</div><div class="lbl">Offen</div></div>
-        <div class="stat"><div class="num">${doneToday}</div><div class="lbl">Heute erledigt</div></div>
-        <div class="stat"><div class="num" style="color:${overdue ? 'var(--danger)' : 'inherit'}">${overdue}</div><div class="lbl">Überfällig</div></div>
-        <div class="stat"><div class="num">${done.length}</div><div class="lbl">Insgesamt erledigt</div></div>
-        <div class="stat"><div class="num">🔥 ${streak}</div><div class="lbl">Tage in Folge produktiv</div></div>
-      </div>
-      <div class="chart"><b>Erledigt in den letzten 14 Tagen</b>
-        <div class="bars">${perDay.map((n, i) => `<div class="bar" title="${n} erledigt"><span>${n || ''}</span><div style="height:${(n / max) * 100}%"></div><span>${WD_SHORT[fromISO(days[i]).getDay()]}</span></div>`).join('')}</div>
-      </div>
-      <div class="chart"><b>Projekte</b>${projRows}</div>`;
-  }
-
-  // ---------- Detail panel ----------
-  function openDetail(id) {
-    ui.selected = id;
-    $('#detail').classList.add('open');
-    $('#detail').setAttribute('aria-hidden', 'false');
-    renderDetail();
-    $$('.task').forEach((el) => el.classList.toggle('selected', el.dataset.id === id));
-  }
-  function closeDetail() {
-    ui.selected = null;
-    $('#detail').classList.remove('open');
-    $('#detail').setAttribute('aria-hidden', 'true');
-    $('#detail').innerHTML = '';
-    $$('.task.selected').forEach((el) => el.classList.remove('selected'));
-  }
-
-  function renderDetail() {
-    const t = getTask(ui.selected);
-    if (!t) { closeDetail(); return; }
-    const d = $('#detail');
-    // Fokus erhalten, wenn bereits gerendert
-    const active = document.activeElement;
-    const activeKey = active && d.contains(active) ? active.dataset.field || active.dataset.sub : null;
-    if (activeKey && d.dataset.for === t.id) { refreshDetailPassive(t); return; }
-    d.dataset.for = t.id;
-    const subDone = t.subtasks.filter((s) => s.done).length;
-    d.innerHTML = `<div class="detail-inner">
-      <div class="detail-head">
-        <button class="check${isDone(t) ? ' checked' : ''}${t.priority ? ' p' + t.priority : ''}" data-d="toggle" title="Erledigt"></button>
-        <span class="small-muted">${STATUS_LABEL[t.status]}</span>
-        <span class="spacer"></span>
-        <button class="icon-btn" data-d="duplicate" title="Duplizieren">⧉</button>
-        <button class="icon-btn" data-d="delete" title="Löschen">🗑️</button>
-        <button class="icon-btn" data-d="close" title="Schließen (Esc)">✕</button>
-      </div>
-      <textarea class="title-input" data-field="title" rows="1" placeholder="Titel">${esc(t.title)}</textarea>
-      <div>
-        <label class="lbl">Notizen</label>
-        <textarea data-field="notes" rows="4" placeholder="Details, Links, Gedanken…">${esc(t.notes)}</textarea>
-      </div>
-      <div class="row2">
-        <div><label class="lbl">Fällig</label><input type="date" data-field="due" value="${t.due || ''}" /></div>
-        <div><label class="lbl">Priorität</label>
-          <select data-field="priority">${[1, 2, 3, 0].map((p) => `<option value="${p}"${t.priority === p ? ' selected' : ''}>${p ? '!' + p + ' ' : ''}${PRIO_LABEL[p]}</option>`).join('')}</select></div>
-      </div>
-      <div class="row2">
-        <div><label class="lbl">Projekt</label>
-          <select data-field="projectId"><option value="">📥 Eingang</option>${state.projects.map((p) => `<option value="${p.id}"${t.projectId === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
-        <div><label class="lbl">Status</label>
-          <select data-field="status">${Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}"${t.status === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
-      </div>
-      <div class="row2">
-        <div><label class="lbl">Wiederholen</label>
-          <select data-field="recurrence">${Object.entries(REC_LABEL).map(([k, v]) => `<option value="${k}"${t.recurrence === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
-        <div><label class="lbl">Tags</label><input type="text" data-field="tags" value="${esc(t.tags.join(', '))}" placeholder="arbeit, wichtig" /></div>
-      </div>
-      <div>
-        <label class="lbl">Unteraufgaben ${t.subtasks.length ? `· ${subDone}/${t.subtasks.length}` : ''}</label>
-        ${t.subtasks.length ? `<div class="progress" style="margin-bottom:8px"><div style="width:${(subDone / t.subtasks.length) * 100}%"></div></div>` : ''}
-        <div class="subtasks">${t.subtasks.map((s) => `<div class="subtask${s.done ? ' done' : ''}" data-sid="${s.id}">
-            <button class="check${s.done ? ' checked' : ''}" data-d="subtoggle"></button>
-            <input type="text" data-sub="${s.id}" value="${esc(s.title)}" />
-            <button class="icon-btn" data-d="subdelete" title="Entfernen">✕</button></div>`).join('')}
+    ensureRecurring(t, addDays(t, 7));
+    const [a, b] = dayRange(t);
+    const todayMs = timeIn(a, b);
+    const wp = weekProgress();
+    const qs = tasksOn(t, (x) => x.questId && getQuest(x.questId));
+    const other = tasksOn(t, (x) => !x.questId || !getQuest(x.questId));
+    const overdue = state.tasks.filter((x) => !x.done && x.date && x.date < t);
+    const listSection = (list) => {
+      const open = list.filter((x) => !x.done), done = list.filter((x) => x.done);
+      const shownDone = ui.showDone ? done : done.slice(0, 1);
+      return `<div class="tlist" data-drop-date="${t}">${open.map((x) => taskCard(x)).join('')}${shownDone.map((x) => taskCard(x)).join('')}</div>
+        ${done.length > 1 ? `<button class="showall" data-act="showdone">${ui.showDone ? 'Weniger zeigen ▴' : `Alle ${done.length} erledigten zeigen ▾`}</button>` : ''}
+        ${!list.length ? '<div class="empty">Noch nichts geplant.</div>' : ''}`;
+    };
+    const h = Math.floor(todayMs / 3600000), m = Math.floor((todayMs % 3600000) / 60000);
+    return `<div class="page-head">
+        <div><h1>${longDate(t)}</h1></div>
+        <div class="right today-total">
+          <div class="row"><div class="big num"><span data-live-today>${h}<small>h</small>${pad(m)}<small>m</small></span> <small>heute</small></div>
+          <div class="pwrap"><div class="pbar"><div data-live-weekbar style="width:${wp.pct}%"></div></div><span class="label num" style="letter-spacing:.02em;text-transform:none"><span data-live-week>${fmtDur(wp.w)}</span> diese Woche · Ziel ${state.settings.weeklyTarget}h</span></div></div>
         </div>
-        <input type="text" class="field-input" data-d="subadd" placeholder="＋ Unteraufgabe hinzufügen (Enter)" style="margin-top:6px" />
       </div>
-      <div class="small-muted">Erstellt: ${new Date(t.createdAt).toLocaleString('de-DE')}${t.completedAt ? ' · Erledigt: ' + new Date(t.completedAt).toLocaleString('de-DE') : ''}</div>
-    </div>`;
-    autoGrow($('.title-input', d));
+      <div class="home-grid">
+        <div>
+          ${overdue.length ? `<div class="overdue-hint">⏳ ${overdue.length} offene Aufgabe${overdue.length > 1 ? 'n' : ''} aus den letzten Tagen<button data-act="move-overdue">Auf heute holen</button></div>` : ''}
+          ${!state.quests.length ? `<div class="overdue-hint">✦ Lege zuerst deine großen Ziele als <b>Quests</b> an – jede Aufgabe zahlt dann auf eine Quest ein.<button data-act="new-quest">Quest anlegen</button></div>` : ''}
+          <div class="section">
+            <div class="section-head"><span class="label">Quest-Arbeit</span></div>
+            ${addRow({ date: t, mode: 'quest', placeholder: 'Quest-Arbeit hinzufügen…' })}
+            ${listSection(qs)}
+          </div>
+          <div class="section">
+            <div class="section-head"><span class="label">Sonstiges</span></div>
+            ${addRow({ date: t, mode: 'other', placeholder: 'Aufgabe hinzufügen…' })}
+            ${listSection(other)}
+          </div>
+        </div>
+        <div class="card timeline-card">${dayGrid([t])}</div>
+      </div>`;
   }
-  function refreshDetailPassive(t) {
-    // Nur Kopfzeile/Check aktualisieren, ohne Eingaben zu stören
-    const c = $('.detail-head .check', $('#detail'));
-    if (c) c.className = `check${isDone(t) ? ' checked' : ''}${t.priority ? ' p' + t.priority : ''}`;
-  }
-  function autoGrow(el) { if (!el) return; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
 
-  function updateField(t, field, value) {
-    switch (field) {
-      case 'title': t.title = value; break;
-      case 'notes': t.notes = value; break;
-      case 'due': t.due = value || null; break;
-      case 'priority': t.priority = Number(value); break;
-      case 'projectId': t.projectId = value || null; break;
-      case 'recurrence': t.recurrence = value; break;
-      case 'tags': t.tags = [...new Set(value.split(/[,\s]+/).map((s) => s.replace(/^#/, '').trim().toLowerCase()).filter(Boolean))]; break;
-      case 'status':
-        t.status = value;
-        t.completedAt = value === 'done' ? (t.completedAt || Date.now()) : null;
-        break;
+  // ---------- Time grid (Home + Kalender) ----------
+  function layoutBlocks(iso) {
+    const [a, b] = dayRange(iso);
+    const items = state.sessions.filter((s) => overlap(s, a, b) > 0 || (s.end == null && s.start < b && s.start >= a))
+      .map((s) => ({ s, a: Math.max(s.start, a), b: Math.max(Math.min(sEnd(s), b), Math.max(s.start, a) + 60000) }))
+      .sort((x, y) => x.a - y.a);
+    const clusters = []; let cur = null;
+    for (const it of items) {
+      if (!cur || it.a >= cur.end) { cur = { items: [], end: 0, lanes: [] }; clusters.push(cur); }
+      let lane = cur.lanes.findIndex((e) => e <= it.a);
+      if (lane < 0) { lane = cur.lanes.length; cur.lanes.push(0); }
+      cur.lanes[lane] = it.b; it.lane = lane; cur.items.push(it); cur.end = Math.max(cur.end, it.b);
+    }
+    clusters.forEach((c) => c.items.forEach((it) => (it.n = c.lanes.length)));
+    return { items, dayA: a };
+  }
+  function dayColumn(iso) {
+    const { items, dayA } = layoutBlocks(iso);
+    const isToday = iso === todayISO();
+    let html = `<div class="daycol${isToday ? ' today' : ''}" style="height:${24 * HOUR_PX}px" data-day="${iso}">`;
+    for (let h = 1; h < 24; h++) html += `<div class="hline" style="top:${h * HOUR_PX}px"></div>`;
+    for (const it of items) {
+      const top = ((it.a - dayA) / 3600000) * HOUR_PX;
+      const hgt = Math.max(15, ((it.b - it.a) / 3600000) * HOUR_PX - 2);
+      const t = getTask(it.s.taskId);
+      const w = 100 / it.n;
+      html += `<div class="block${it.s.end == null ? ' live' : ''}" data-act="edit-session" data-id="${it.s.id}" style="--qc:${qColor(sQuest(it.s))};top:${top}px;height:${hgt}px;left:calc(${it.lane * w}% + 3px);width:calc(${w}% - 6px)" title="${esc(t?.title || 'Gelöschte Aufgabe')} · ${fmtHM(it.s.start)}–${it.s.end == null ? 'läuft' : fmtHM(it.s.end)}">
+        <div class="bt">${esc(t?.title || 'Gelöschte Aufgabe')}</div>${hgt > 30 ? `<div class="br">${fmtHM(it.s.start)} – ${it.s.end == null ? 'jetzt' : fmtHM(it.s.end)}</div>` : ''}</div>`;
+    }
+    if (isToday) { const d = new Date(); html += `<div class="nowline" style="top:${(d.getHours() + d.getMinutes() / 60) * HOUR_PX}px"></div>`; }
+    return html + '</div>';
+  }
+  function dayGrid(days) {
+    let hours = `<div class="hours" style="height:${24 * HOUR_PX}px">`;
+    for (let h = 1; h < 24; h++) hours += `<div style="top:${h * HOUR_PX}px">${pad(h)}:00</div>`;
+    hours += '</div>';
+    return `<div class="tgrid${days.length > 1 ? ' week' : ''}">${hours}${days.map(dayColumn).join('')}</div>`;
+  }
+
+  // ---------- Plan ----------
+  function renderPlan() {
+    const t = todayISO();
+    if (!ui.planStart) ui.planStart = addDays(t, -2);
+    const days = [...Array(9)].map((_, i) => addDays(ui.planStart, i));
+    ensureRecurring(days[0], days[days.length - 1]);
+    const filter = ui.planFilter || '';
+    const qs = activeQuests();
+    const d0 = fromISO(days[2]);
+    return `<div class="page-head">
+        <div><h1>Woche planen</h1><div class="sub">Plane Quest-Arbeit auf Tage. Ziehe Aufgaben zwischen den Spalten.</div></div>
+        <div class="right">
+          <select class="btn" data-role="planfilter" title="Nach Quest filtern"><option value="">Alle Quests</option>${qs.map((q) => `<option value="${q.id}"${filter === q.id ? ' selected' : ''}>${esc(q.name)}</option>`).join('')}<option value="none"${filter === 'none' ? ' selected' : ''}>Ohne Quest</option></select>
+          <span class="muted small">${MON_LONG[d0.getMonth()]} ${d0.getFullYear()}</span>
+          <button class="btn" data-act="plan-shift" data-n="-7">‹</button>
+          <button class="btn" data-act="plan-today">Heute</button>
+          <button class="btn" data-act="plan-shift" data-n="7">›</button>
+          <button class="btn" data-act="recurring">↻ Wiederkehrend</button>
+        </div>
+      </div>
+      <div class="plan-scroll">${days.map((d) => {
+        const dt = fromISO(d);
+        const list = tasksOn(d, (x) => !filter || (filter === 'none' ? !x.questId : x.questId === filter));
+        const [a, b] = dayRange(d);
+        const spent = timeIn(a, b);
+        return `<div class="pcol${d === t ? ' today' : ''}${d < t ? ' past' : ''}">
+          <div class="pcol-head"><span class="dn">${WD[dt.getDay()]} ${dt.getDate()}</span>${spent ? `<small>${fmtDur(spent)}</small>` : ''}</div>
+          <form class="addrow" data-form="add" data-date="${d}" data-mode="plan"><input placeholder="Aufgabe… (#Quest)" maxlength="200" /></form>
+          <div class="tlist" data-drop-date="${d}">${list.map((x) => taskCard(x)).join('')}</div>
+        </div>`;
+      }).join('')}</div>`;
+  }
+
+  // ---------- Calendar ----------
+  function renderCalendar() {
+    const t = todayISO();
+    if (!ui.calWeek) ui.calWeek = weekStart(t);
+    const days = [...Array(7)].map((_, i) => addDays(ui.calWeek, i));
+    const [a, b] = weekRange(ui.calWeek);
+    const q = questTimeIn(a, b);
+    const target = (state.settings.weeklyTarget || 20) * 3600000;
+    return `<div class="page-head">
+        <div style="display:flex;align-items:center;gap:14px"><h1>Kalender</h1>
+          <div class="weeknav"><button class="iconb" data-act="cal-shift" data-n="-7">‹</button><span class="range">${fmtRange(ui.calWeek)}</span><button class="iconb" data-act="cal-shift" data-n="7">›</button>
+          <button class="btn ghost" data-act="cal-today">Diese Woche</button></div></div>
+        <div class="right today-total"><div class="row">
+          <button class="btn" data-act="add-session">＋ Zeit eintragen</button>
+          <div class="big num">${fmtDur(q)} <small>/ ${state.settings.weeklyTarget}h Quest</small></div>
+          <div class="pbar"><div style="width:${Math.min(100, (q / target) * 100)}%"></div></div></div></div>
+      </div>
+      <div class="card cal-wrap">
+        <div class="weekhead"><div></div>${days.map((d) => {
+          const dt = fromISO(d); const [x, y] = dayRange(d);
+          return `<div class="d${d === t ? ' today' : ''}">${WD[dt.getDay()]} ${dt.getDate()}<small>${fmtDur(timeIn(x, y))}</small></div>`;
+        }).join('')}</div>
+        ${dayGrid(days)}
+      </div>`;
+  }
+
+  // ---------- Focus ----------
+  function renderFocus() {
+    const r = running();
+    const t = todayISO();
+    let task = r ? getTask(r.taskId) : null;
+    const candidates = state.tasks.filter((x) => !x.done && x.date && x.date <= t).sort((x, y) => (!!getQuest(y.questId) - !!getQuest(x.questId)) || (x.date < y.date ? -1 : x.date > y.date ? 1 : x.order - y.order));
+    if (!task) task = getTask(ui.focusPick) && !getTask(ui.focusPick).done ? getTask(ui.focusPick) : candidates[0];
+    const [a, b] = dayRange(t);
+    const doneToday = state.tasks.filter((x) => x.done && x.doneAt && x.doneAt >= a && x.doneAt < b).length;
+    if (!task) {
+      return `<div class="focus"><div class="ftop"><button data-act="go" data-view="home">← Zurück</button><span>Fokus</span></div>
+        <div class="pill">Nichts offen für heute</div>
+        <h2>Was ist heute die eine wichtige Sache?</h2>
+        <form class="addrow" data-form="add" data-date="${t}" data-mode="focus" style="width:min(460px,90vw);margin-top:20px"><input placeholder="Aufgabe eingeben und Enter drücken…" /></form>
+        <div class="today-line">${doneToday ? `${doneToday} heute erledigt · ` : ''}${fmtDur(timeIn(a, b))} heute gemessen</div></div>`;
+    }
+    const q = getQuest(task.questId);
+    const isRun = r && r.taskId === task.id;
+    const others = candidates.filter((x) => x.id !== task.id);
+    return `<div class="focus" style="--qc:${q ? q.color : 'var(--dim)'}">
+      <div class="ftop"><button data-act="go" data-view="home">← Zurück</button><span>${isRun ? '<span class="live-dot"></span>' : ''}Fokus · ${esc(q ? q.name : 'Sonstiges')}</span></div>
+      <span class="pill"><i></i>${esc(q ? q.name : 'Keine Quest')}</span>
+      <h2>${esc(task.title)}</h2>
+      <div class="clock" data-live-focus="${task.id}">${fmtClock(taskTime(task.id))}</div>
+      <div class="state">${isRun ? 'Läuft' : 'Pausiert'}</div>
+      <div class="actions">
+        ${isRun ? '<button class="btn" data-act="pause">❚❚ Pause</button>' : `<button class="btn gold" data-act="start" data-id="${task.id}">▶ Start</button>`}
+        <button class="btn" data-act="complete" data-id="${task.id}">✓ Abschließen</button>
+      </div>
+      ${others.length && !isRun ? `<div class="pick">Andere Aufgabe: <select data-role="focuspick"><option value="">— wählen —</option>${others.map((x) => `<option value="${x.id}">${esc(x.title)}${getQuest(x.questId) ? ' · ' + esc(getQuest(x.questId).name) : ''}</option>`).join('')}</select></div>` : ''}
+      <div class="today-line">Leertaste: Start/Pause · Enter: Abschließen${doneToday ? ` · ${doneToday} heute erledigt` : ''}</div>
+    </div>`;
+  }
+
+  // ---------- Quests ----------
+  function sparkline(values, color) {
+    const w = 90, h = 30, max = Math.max(1, ...values);
+    const pts = values.map((v, i) => `${(i / (values.length - 1)) * w},${h - 3 - (v / max) * (h - 6)}`).join(' ');
+    const last = pts.split(' ').pop().split(',');
+    return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${last[0]}" cy="${last[1]}" r="2.2" fill="${color}"/></svg>`;
+  }
+  function questWeekHours(qid, ws) {
+    const [a, b] = weekRange(ws);
+    return timeIn(a, b, (s) => sQuest(s) === qid);
+  }
+  function renderQuests() {
+    const ws = weekStart(todayISO());
+    const total = timeIn(0, 8.64e15, isQuestSession);
+    const active = activeQuests();
+    const completed = state.quests.filter((q) => q.status === 'completed');
+    const list = ui.questTab === 'completed' ? completed : active;
+    return `<div class="page-head">
+        <div><h1>Quests</h1><div class="sub">Gib deiner Zeit einen Sinn. Schaffe Raum für das, was kommt.</div></div>
+        <div class="right"><button class="btn gold" data-act="new-quest">＋ Neue Quest</button></div>
+      </div>
+      <div class="card stats3">
+        <div><div class="label" style="text-transform:none;letter-spacing:0">Quest-Stunden · gesamt</div><div class="v">${fmtDur(total)}</div></div>
+        <div><div class="label" style="text-transform:none;letter-spacing:0">In Arbeit</div><div class="v">${pad(active.length)}</div></div>
+        <div><div class="label" style="text-transform:none;letter-spacing:0">🏆 Abgeschlossen</div><div class="v">${pad(completed.length)}</div></div>
+      </div>
+      <div style="display:flex;align-items:center;margin-top:20px;gap:12px">
+        <div class="seg"><button class="${ui.questTab !== 'completed' ? 'on' : ''}" data-act="qtab" data-tab="active">Aktiv · ${active.length}</button><button class="${ui.questTab === 'completed' ? 'on' : ''}" data-act="qtab" data-tab="completed">Abgeschlossen · ${completed.length}</button></div>
+        <span class="muted small" style="margin-left:auto">Kleine Schritte. Großer Fortschritt.</span>
+      </div>
+      <div class="muted small" style="margin-top:12px">Klicke auf eine Quest, um sie zu bearbeiten oder abzuschließen.</div>
+      <div class="qgrid">
+        ${list.map((q) => {
+          const weeks = [...Array(8)].map((_, i) => questWeekHours(q.id, addDays(ws, (i - 7) * 7)) / 3600000);
+          const tot = timeIn(0, 8.64e15, (s) => sQuest(s) === q.id);
+          return `<div class="card qcard" data-act="edit-quest" data-id="${q.id}">
+            <div class="qtop"><div class="qicon">${esc(q.icon || '✦')}</div><div><div class="qname">${esc(q.name)}</div>${q.description ? `<div class="qdesc">${esc(q.description)}</div>` : ''}</div></div>
+            <div class="qbottom"><div><div class="qhours">${fmtDur(questWeekHours(q.id, ws))}</div><div class="qsmall">Diese Woche</div></div>
+            <div>${sparkline(weeks, q.color)}<div class="qtotal">${fmtDur(tot)} gesamt</div></div></div>
+          </div>`;
+        }).join('')}
+        ${ui.questTab !== 'completed' ? '<button class="card qcard new" data-act="new-quest"><span class="plus">＋</span>Neue Quest</button>' : ''}
+      </div>
+      ${!list.length && ui.questTab === 'completed' ? '<div class="empty-big">Noch keine abgeschlossenen Quests.</div>' : ''}`;
+  }
+
+  // ---------- Review ----------
+  function renderReview() {
+    const t = todayISO();
+    if (!ui.reviewWeek) ui.reviewWeek = weekStart(t);
+    const ws = ui.reviewWeek;
+    const days = [...Array(7)].map((_, i) => addDays(ws, i));
+    const [a, b] = weekRange(ws);
+    const qTime = questTimeIn(a, b);
+    const all = timeIn(a, b);
+    const other = all - qTime;
+    const target = (state.settings.weeklyTarget || 20) * 3600000;
+    const elapsedDays = Math.max(1, Math.min(7, Math.floor((Math.min(now(), b) - a) / 86400000) + (now() < b ? 1 : 0)));
+    const perDay = days.map((d) => { const [x, y] = dayRange(d); return timeIn(x, y, isQuestSession); });
+    const maxDay = Math.max(3600000, ...perDay);
+    const byQuest = state.quests.map((q) => ({ q, ms: timeIn(a, b, (s) => sQuest(s) === q.id) })).filter((x) => x.ms > 0).sort((x, y) => y.ms - x.ms);
+    const maxQ = Math.max(1, ...byQuest.map((x) => x.ms));
+    const weeks = [...Array(8)].map((_, i) => { const w = addDays(ws, (i - 7) * 7); const [x, y] = weekRange(w); return { w, ms: questTimeIn(x, y) }; });
+    const prev4 = weeks.slice(-4).map((x) => x.ms); const avg4 = prev4.reduce((s, x) => s + x, 0) / 4;
+    const review = state.reviews.find((r) => r.id === 'w_' + ws) || {};
+    const doneTasks = state.tasks.filter((x) => x.done && x.doneAt >= a && x.doneAt < b).sort((x, y) => x.doneAt - y.doneAt);
+    const doneByDay = days.map((d) => { const [x, y] = dayRange(d); return { d, items: doneTasks.filter((k) => k.doneAt >= x && k.doneAt < y) }; }).filter((g) => g.items.length);
+    const isCur = ws === weekStart(t);
+    return `<div class="page-head">
+        <div><h1>Wochen-Review</h1><div class="sub">Wie viel hat diese Woche deine Quests vorangebracht?</div></div>
+        <div class="right weeknav"><button class="iconb" data-act="rev-shift" data-n="-7">‹</button><span class="range">${fmtRange(ws)}</span><button class="iconb" data-act="rev-shift" data-n="7">›</button><button class="btn ghost" data-act="rev-today">${isCur ? '◷ Diese Woche' : 'Zu dieser Woche'}</button></div>
+      </div>
+      <div class="rgrid three">
+        <div class="card kpi"><div class="label">Quest-Stunden</div><div class="v gold">${fmtDur(qTime)} <small>/ ${state.settings.weeklyTarget}h</small></div><div class="s">${Math.round((qTime / target) * 100)} % vom Ziel</div></div>
+        <div class="card kpi"><div class="label">Tagesdurchschnitt</div><div class="v">${fmtDur(all / elapsedDays)}</div><div class="s">über ${elapsedDays} Tag${elapsedDays > 1 ? 'e' : ''}</div></div>
+        <div class="card kpi"><div class="label">Quest-Arbeit vs. Sonstiges</div><div class="v">${all ? Math.round((qTime / all) * 100) : 0} <small>%</small></div><div class="s">${doneTasks.length} Aufgaben erledigt</div></div>
+      </div>
+      <div class="rgrid two" style="margin-top:14px">
+        <div class="card panel"><div class="label">Quest-Stunden · pro Tag</div>
+          <div class="bars">${days.map((d, i) => `<div class="b${d === t ? ' cur' : ''}"><span class="t">${fmtDur(perDay[i])}</span><div class="col" style="height:${(perDay[i] / maxDay) * 140}px"></div><span class="d">${WD[fromISO(d).getDay()]}</span></div>`).join('')}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div class="card panel"><div class="label">Stunden nach Quest</div>
+            <div class="hbars">${byQuest.length ? byQuest.map((x) => `<div class="hbar"><span class="n"><i style="background:${x.q.color}"></i>${esc(x.q.name)}</span><span class="track"><div style="width:${(x.ms / maxQ) * 100}%;background:${x.q.color}"></div></span><span class="val">${fmtDur(x.ms)}</span></div>`).join('') : '<div class="empty">Diese Woche noch keine Quest-Zeit gemessen.</div>'}</div>
+          </div>
+          <div class="card panel"><div class="label">Quest-Arbeit vs. Sonstiges</div>
+            <div class="split"><div style="width:${all ? (qTime / all) * 100 : 0}%"></div></div>
+            <div class="legend"><span><i style="background:var(--gold)"></i>Quest-Arbeit · ${fmtDur(qTime)}</span><span><i style="background:var(--card-3)"></i>Sonstiges · ${fmtDur(other)}</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="card panel" style="margin-top:14px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start"><div class="label">Quest-Stunden · letzte Wochen</div>
+          <div style="text-align:right"><div class="small muted">— Ø 4 Wochen</div><div style="font-size:22px;color:var(--gold)" class="num">${fmtDur(avg4)} <small class="muted" style="font-size:12px">/Woche</small></div></div></div>
+        ${weeksChart(weeks, ws)}
+      </div>
+      <div class="card panel" style="margin-top:14px">
+        <div class="label">Ritualisierte Reflexion</div>
+        <div class="reflect" data-review="${ws}">
+          <div><label>Was lief diese Woche gut?</label><textarea data-rf="good" placeholder="Erfolge, auch kleine…">${esc(review.good || '')}</textarea></div>
+          <div><label>Was hat mich gebremst?</label><textarea data-rf="bad" placeholder="Ablenkungen, Hindernisse…">${esc(review.bad || '')}</textarea></div>
+          <div><label>Fokus für nächste Woche</label><textarea data-rf="next" placeholder="Die eine Sache, die zählt…">${esc(review.next || '')}</textarea></div>
+        </div>
+      </div>
+      <div class="card panel donelist" style="margin-top:14px">
+        <div class="label">Done-Liste · ${doneTasks.length} erledigt</div>
+        ${doneByDay.length ? doneByDay.map((g) => `<div class="day"><div class="label" style="color:var(--dim)">${longDate(g.d)}</div>${g.items.map((k) => {
+          const q = getQuest(k.questId); const tm = taskTime(k.id);
+          return `<div class="item" style="--qc:${q ? q.color : 'var(--teal)'}"><span class="chk on">✓</span><span>${esc(k.title)}</span>${q ? `<span class="qchip muted small"><i></i>${esc(q.name)}</span>` : ''}<span class="t">${tm ? fmtDur(tm) : ''}</span></div>`;
+        }).join('')}</div>`).join('') : '<div class="empty">Noch nichts erledigt in dieser Woche.</div>'}
+      </div>`;
+  }
+  function weeksChart(weeks, curWs) {
+    const W = 800, H = 190, pad_ = 24;
+    const max = Math.max(3600000, ...weeks.map((w) => w.ms));
+    const bw = (W - pad_ * 2) / weeks.length;
+    const y = (ms) => H - 24 - (ms / max) * (H - 50);
+    const avgs = weeks.map((_, i) => { const sl = weeks.slice(Math.max(0, i - 3), i + 1); return sl.reduce((s, x) => s + x.ms, 0) / sl.length; });
+    let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block">`;
+    weeks.forEach((w, i) => {
+      const x = pad_ + i * bw + bw * 0.3, bh = H - 24 - y(w.ms);
+      svg += `<rect x="${x}" y="${y(w.ms)}" width="${bw * 0.4}" height="${Math.max(1, bh)}" rx="2" fill="${w.w === curWs ? '#f2c14e' : '#3fd1a5'}" opacity="${w.w === curWs ? 1 : .85}"><title>${fmtRange(w.w)}: ${fmtDur(w.ms)}</title></rect>`;
+      const d = fromISO(w.w);
+      svg += `<text x="${x + bw * 0.2}" y="${H - 6}" fill="#5a5a62" font-size="11" text-anchor="middle">${d.getDate()}.${d.getMonth() + 1}.</text>`;
+    });
+    svg += `<polyline points="${avgs.map((v, i) => `${pad_ + i * bw + bw * 0.5},${y(v)}`).join(' ')}" fill="none" stroke="#ededef" stroke-width="1.5" opacity=".8"/>`;
+    avgs.forEach((v, i) => { svg += `<circle cx="${pad_ + i * bw + bw * 0.5}" cy="${y(v)}" r="3" fill="#0a0a0b" stroke="#ededef" stroke-width="1.5"/>`; });
+    return `<div class="weeks-chart">${svg}</svg></div>`;
+  }
+
+  // ---------- Running bar (mobile) & live tick ----------
+  function renderRunbar() {
+    const rb = $('#runbar'); const r = running();
+    if (!r || ui.view === 'focus') { rb.hidden = true; return; }
+    const t = getTask(r.taskId);
+    rb.hidden = false;
+    rb.style.setProperty('--qc', qColor(sQuest(r)));
+    rb.innerHTML = `<span class="rt" data-act="go" data-view="focus">${esc(t?.title || '')}</span><span class="rc" data-live-task="${r.taskId}">${fmtClock(taskTime(r.taskId))}</span><button class="iconb" data-act="pause">❚❚</button><button class="iconb" data-act="complete" data-id="${r.taskId}">✓</button>`;
+  }
+  let lastMinute = -1;
+  function tick() {
+    const r = running();
+    if (r) {
+      const tt = fmtClock(taskTime(r.taskId));
+      $$(`[data-live-task="${r.taskId}"]`).forEach((el) => (el.textContent = tt));
+      $$(`[data-live-focus="${r.taskId}"]`).forEach((el) => (el.textContent = tt));
+      const t = getTask(r.taskId);
+      document.title = `${tt} · ${t?.title || 'Quest'}`;
+    } else document.title = 'Quest';
+    const el = $('[data-live-today]');
+    if (el && r) {
+      const [a, b] = dayRange(todayISO()); const ms = timeIn(a, b);
+      el.innerHTML = `${Math.floor(ms / 3600000)}<small>h</small>${pad(Math.floor((ms % 3600000) / 60000))}<small>m</small>`;
+      const wp = weekProgress();
+      const w = $('[data-live-week]'); if (w) w.textContent = fmtDur(wp.w);
+      const wb = $('[data-live-weekbar]'); if (wb) wb.style.width = wp.pct + '%';
+    }
+    // Zeitleisten jede Minute neu zeichnen (laufender Block wächst, Jetzt-Linie wandert)
+    const m = new Date().getMinutes();
+    if (m !== lastMinute) {
+      const first = lastMinute === -1; lastMinute = m;
+      if (!first && ['home', 'calendar'].includes(ui.view) && !isTyping()) render();
     }
   }
+  const isTyping = () => { const a = document.activeElement; return a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName); };
 
-  // ---------- Toast & dialogs ----------
-  let toastTimer;
+  // ================= Dialogs =================
+  const dlg = () => $('#dialog');
+  function openDialog(html, onMount) {
+    const d = dlg(); d.innerHTML = html; d.showModal(); onMount && onMount(d);
+    $$('[data-close]', d).forEach((b) => (b.onclick = () => d.close()));
+  }
+  const questOptions = (sel) => `<option value="">Keine Quest (Sonstiges)</option>${activeQuests().map((q) => `<option value="${q.id}"${q.id === sel ? ' selected' : ''}>${esc(q.name)}</option>`).join('')}${sel && getQuest(sel)?.status === 'completed' ? `<option value="${sel}" selected>${esc(getQuest(sel).name)} (abgeschlossen)</option>` : ''}`;
+
+  function taskDialog(id) {
+    const t = getTask(id); if (!t) return;
+    const tm = taskTime(id);
+    openDialog(`<form method="dialog" id="tf"><h2>Aufgabe</h2>
+      <div class="field"><label>Titel</label><input type="text" name="title" value="${esc(t.title)}" required maxlength="200" /></div>
+      <div class="row2">
+        <div class="field"><label>Quest</label><select name="quest">${questOptions(t.questId)}</select></div>
+        <div class="field"><label>Tag</label><input type="date" name="date" value="${t.date || ''}" /></div>
+      </div>
+      <div class="field"><label>Notizen</label><textarea name="notes" rows="3">${esc(t.notes || '')}</textarea></div>
+      <div class="field"><label>Gemessene Zeit: ${fmtDur(tm)}</label>
+        <div style="display:flex;gap:8px"><input type="number" name="addmin" min="1" max="1440" placeholder="Minuten nachtragen" class="input" style="flex:1" /><button type="button" class="btn" id="addmin">＋ Nachtragen</button></div></div>
+      <div class="dlg-actions">
+        <button type="button" class="btn danger left" id="del">Löschen</button>
+        <button type="button" class="btn" id="focusbtn">◎ Fokus</button>
+        <button type="button" class="btn" data-close>Abbrechen</button>
+        <button type="submit" class="btn gold">Speichern</button>
+      </div></form>`, (d) => {
+      const f = $('#tf', d);
+      f.onsubmit = (e) => {
+        e.preventDefault();
+        t.title = f.title.value.trim() || t.title; t.questId = f.quest.value || null; t.date = f.date.value || null; t.notes = f.notes.value;
+        d.close(); commit();
+      };
+      $('#del', d).onclick = () => { d.close(); deleteTask(id); };
+      $('#focusbtn', d).onclick = () => { d.close(); ui.focusPick = id; go('focus'); };
+      $('#addmin', d).onclick = () => {
+        const m = Number(f.addmin.value); if (!m) return;
+        const end = now(); state.sessions.push({ id: uid(), taskId: id, questId: t.questId, start: end - m * 60000, end, manual: true });
+        d.close(); commit(); toast(`${m} Minuten nachgetragen`);
+      };
+    });
+  }
+
+  function questDialog(id) {
+    const q = id ? getQuest(id) : null;
+    let color = q?.color || QCOLORS[state.quests.length % QCOLORS.length];
+    let icon = q?.icon || QICONS[state.quests.length % QICONS.length];
+    openDialog(`<form method="dialog" id="qf"><h2>${q ? 'Quest bearbeiten' : 'Neue Quest'}</h2>
+      <div class="field"><label>Name</label><input type="text" name="name" value="${esc(q?.name || '')}" placeholder="z. B. Gesundheit, Business, Studium" required maxlength="40" /></div>
+      <div class="field"><label>Ziel / Beschreibung</label><input type="text" name="desc" value="${esc(q?.description || '')}" placeholder="z. B. Marathon unter 4h im Oktober" maxlength="80" /></div>
+      <div class="field"><label>Symbol</label><div class="icons">${QICONS.map((i) => `<button type="button" data-icon="${i}" class="${i === icon ? 'on' : ''}">${i}</button>`).join('')}</div></div>
+      <div class="field"><label>Farbe</label><div class="swatches">${QCOLORS.map((c) => `<button type="button" data-color="${c}" class="${c === color ? 'on' : ''}" style="background:${c}"></button>`).join('')}</div></div>
+      <div class="dlg-actions">
+        ${q ? `<button type="button" class="btn danger left" id="del">Löschen</button><button type="button" class="btn" id="complete">${q.status === 'completed' ? '↺ Reaktivieren' : '🏆 Abschließen'}</button>` : ''}
+        <button type="button" class="btn" data-close>Abbrechen</button>
+        <button type="submit" class="btn gold">Speichern</button>
+      </div></form>`, (d) => {
+      $$('[data-color]', d).forEach((b) => (b.onclick = () => { color = b.dataset.color; $$('[data-color]', d).forEach((x) => x.classList.toggle('on', x === b)); }));
+      $$('[data-icon]', d).forEach((b) => (b.onclick = () => { icon = b.dataset.icon; $$('[data-icon]', d).forEach((x) => x.classList.toggle('on', x === b)); }));
+      const f = $('#qf', d);
+      f.onsubmit = (e) => {
+        e.preventDefault();
+        const name = f.name.value.trim(); if (!name) return;
+        if (q) Object.assign(q, { name, description: f.desc.value.trim(), color, icon });
+        else { const nq = { id: uid(), name, description: f.desc.value.trim(), color, icon, status: 'active', order: state.quests.length, createdAt: now() }; state.quests.push(nq); ui.lastQuest = nq.id; }
+        d.close(); commit();
+      };
+      if (q) {
+        $('#complete', d).onclick = () => {
+          q.status = q.status === 'completed' ? 'active' : 'completed'; q.completedAt = q.status === 'completed' ? now() : null;
+          d.close(); commit(); if (q.status === 'completed') toast(`🏆 Quest „${q.name}“ abgeschlossen!`);
+        };
+        $('#del', d).onclick = () => {
+          const n = state.tasks.filter((t) => t.questId === q.id).length;
+          if (!confirm(`Quest „${q.name}“ löschen?${n ? `\n${n} Aufgabe(n) werden zu „Sonstiges“.` : ''}\nGemessene Zeiten bleiben erhalten.`)) return;
+          state.tasks.forEach((t) => { if (t.questId === q.id) t.questId = null; });
+          state.quests = state.quests.filter((x) => x.id !== q.id);
+          d.close(); commit();
+        };
+      }
+    });
+  }
+
+  function sessionDialog(id) {
+    const s = id ? state.sessions.find((x) => x.id === id) : null;
+    const dayISO = s ? toISO(new Date(s.start)) : todayISO();
+    const tasks = state.tasks.filter((t) => !t.done || t.id === s?.taskId).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    const endVal = s ? (s.end == null ? '' : fmtHM(s.end)) : fmtHM(now());
+    const startVal = s ? fmtHM(s.start) : fmtHM(now() - 3600000);
+    openDialog(`<form method="dialog" id="sf"><h2>${s ? 'Zeiteintrag' : 'Zeit eintragen'}</h2>
+      <div class="field"><label>Aufgabe</label><select name="task" required>${s && !getTask(s.taskId) ? '<option value="">(gelöschte Aufgabe)</option>' : ''}${tasks.map((t) => `<option value="${t.id}"${t.id === s?.taskId ? ' selected' : ''}>${esc(t.title)}${getQuest(t.questId) ? ' · ' + esc(getQuest(t.questId).name) : ''}</option>`).join('')}</select></div>
+      <div class="row3">
+        <div class="field"><label>Tag</label><input type="date" name="day" value="${dayISO}" required /></div>
+        <div class="field"><label>Von</label><input type="time" name="from" value="${startVal}" required /></div>
+        <div class="field"><label>Bis</label><input type="time" name="to" value="${endVal}" ${s && s.end == null ? 'disabled placeholder="läuft"' : 'required'} /></div>
+      </div>
+      ${s && s.end == null ? '<p class="muted small">Dieser Eintrag läuft gerade.</p>' : ''}
+      <div class="dlg-actions">
+        ${s ? '<button type="button" class="btn danger left" id="del">Löschen</button>' : ''}
+        <button type="button" class="btn" data-close>Abbrechen</button>
+        <button type="submit" class="btn gold">Speichern</button>
+      </div></form>`, (d) => {
+      const f = $('#sf', d);
+      if (!tasks.length && !s) { f.task.outerHTML = '<p class="muted small">Lege zuerst eine Aufgabe an.</p>'; }
+      f.onsubmit = (e) => {
+        e.preventDefault();
+        const taskId = f.task?.value; if (!taskId && !s) return;
+        const base = dayStartMs(f.day.value);
+        const [fh, fm] = f.from.value.split(':').map(Number);
+        const start = base + (fh * 60 + fm) * 60000;
+        let end = null;
+        if (!(s && s.end == null)) {
+          const [th, tm] = f.to.value.split(':').map(Number);
+          end = base + (th * 60 + tm) * 60000; if (end <= start) end += 86400000;
+        }
+        if (s) { Object.assign(s, { start, end, taskId: taskId || s.taskId }); s.questId = getTask(s.taskId)?.questId ?? s.questId; }
+        else state.sessions.push({ id: uid(), taskId, questId: getTask(taskId)?.questId || null, start, end, manual: true });
+        d.close(); commit();
+      };
+      if (s) $('#del', d).onclick = () => {
+        const idx = state.sessions.indexOf(s); state.sessions.splice(idx, 1); d.close(); commit();
+        toast('Zeiteintrag gelöscht', () => { state.sessions.splice(idx, 0, s); commit(); });
+      };
+    });
+  }
+
+  function recurringDialog() {
+    const list = state.recurring;
+    const dayBoxes = [1, 2, 3, 4, 5, 6, 0].map((d) => `<label><input type="checkbox" name="d" value="${d}" ${d >= 1 && d <= 5 ? 'checked' : ''}/>${WD[d]}</label>`).join('');
+    openDialog(`<h2>Wiederkehrende Aufgaben</h2>
+      <div class="rlist">${list.length ? list.map((r) => `<div class="r" style="--qc:${qColor(r.questId)}"><div>${esc(r.title)}<br><small>${r.days.length === 7 ? 'Täglich' : [1, 2, 3, 4, 5, 6, 0].filter((d) => r.days.includes(d)).map((d) => WD[d]).join(', ')}${getQuest(r.questId) ? ' · ' + esc(getQuest(r.questId).name) : ''}</small></div><button class="iconb" data-rdel="${r.id}" title="Löschen">✕</button></div>`).join('') : '<div class="empty">Noch keine. Z. B. „Morning Check-in“ jeden Tag.</div>'}</div>
+      <form id="rf">
+        <div class="field"><label>Neue Routine</label><input type="text" name="title" placeholder="z. B. Weekly Planning" required maxlength="120" /></div>
+        <div class="field"><label>Quest</label><select name="quest">${questOptions(null)}</select></div>
+        <div class="field"><label>Tage</label><div class="days7">${dayBoxes}</div></div>
+        <div class="dlg-actions"><button type="button" class="btn" data-close>Fertig</button><button type="submit" class="btn gold">＋ Hinzufügen</button></div>
+      </form>`, (d) => {
+      $('#rf', d).onsubmit = (e) => {
+        e.preventDefault(); const f = e.target;
+        const days = $$('input[name=d]:checked', f).map((x) => Number(x.value)); if (!days.length) { toast('Mindestens einen Tag wählen'); return; }
+        state.recurring.push({ id: uid(), title: f.title.value.trim(), questId: f.quest.value || null, days, order: state.recurring.length, createdAt: dayStartMs(todayISO()) });
+        save(); ensureRecurring(todayISO(), addDays(todayISO(), 14)); render(); recurringDialog();
+      };
+      $$('[data-rdel]', d).forEach((b) => (b.onclick = () => {
+        const id = b.dataset.rdel;
+        state.recurring = state.recurring.filter((r) => r.id !== id);
+        state.tasks = state.tasks.filter((t) => !(t.recurringId === id && !t.done && t.date >= todayISO()));
+        commit(); recurringDialog();
+      }));
+    });
+  }
+
+  function settingsDialog() {
+    const link = sync ? syncLink() : '';
+    openDialog(`<h2>Einstellungen</h2>
+      <div class="field"><label>Wochenziel Quest-Stunden</label><input type="number" id="wt" min="1" max="100" value="${state.settings.weeklyTarget}" /></div>
+      <hr class="sep" />
+      <div class="field"><label>Mac & Handy synchronisieren</label>
+        ${sync ? `<p class="small muted" style="margin-top:0">Status: <b style="color:var(--text)">${syncLabel()}</b>. Öffne diesen Link auf deinem anderen Gerät, um es zu verbinden:</p>
+          <div class="keybox" id="synclink">${esc(link)}</div>
+          <div class="dlg-actions" style="justify-content:flex-start"><button class="btn gold" id="copy">Link kopieren</button>${navigator.share ? '<button class="btn" id="share">Teilen…</button>' : ''}<button class="btn" id="syncnow">Jetzt synchronisieren</button><button class="btn danger" id="unlink">Trennen</button></div>
+          <p class="small muted">Wer diesen Link hat, kann deine Aufgaben sehen – teile ihn nur mit dir selbst.</p>`
+        : `<p class="small muted" style="margin-top:0">Deine Aufgaben werden verschlüsselt übertragen und auf allen verbundenen Geräten gleich angezeigt. Kein Konto nötig.</p>
+          <div class="dlg-actions" style="justify-content:flex-start"><button class="btn gold" id="enable">Synchronisierung aktivieren</button></div>
+          <p class="small muted">Schon auf einem anderen Gerät aktiviert? Öffne dort den Sync-Link – oder füge ihn hier ein:</p>
+          <div style="display:flex;gap:8px"><input class="input" id="joinkey" placeholder="Sync-Link oder Schlüssel" /><button class="btn" id="join">Verbinden</button></div>`}
+      </div>
+      <hr class="sep" />
+      <div class="field"><label>Daten</label><div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="export">⬇ Export (JSON)</button>
+        <label class="btn" style="cursor:pointer">⬆ Import<input type="file" id="import" accept="application/json" hidden /></label>
+        <button class="btn" id="help">⌨ Tastenkürzel</button></div></div>
+      <div class="dlg-actions"><button class="btn gold" data-close>Fertig</button></div>`, (d) => {
+      $('#wt', d).onchange = (e) => { state.settings.weeklyTarget = Math.max(1, Math.min(100, Number(e.target.value) || 20)); commit(); };
+      if (sync) {
+        $('#copy', d).onclick = async () => { try { await navigator.clipboard.writeText(link); toast('Link kopiert'); } catch { const r = document.createRange(); r.selectNodeContents($('#synclink', d)); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Link markiert – jetzt kopieren'); } };
+        $('#share', d) && ($('#share', d).onclick = () => navigator.share({ title: 'Quest Sync-Link', url: link }).catch(() => {}));
+        $('#syncnow', d).onclick = () => { doSync(); };
+        $('#unlink', d).onclick = () => { if (!confirm('Dieses Gerät vom Sync trennen? Die Daten bleiben hier erhalten.')) return; sync = null; localStorage.removeItem(SYNC_KEY); setSyncStatus('off'); d.close(); };
+      } else {
+        $('#enable', d).onclick = async () => { connectSync(newKey(), true); d.close(); settingsDialog(); };
+        $('#join', d).onclick = () => {
+          const v = $('#joinkey', d).value.trim(); const m = v.match(/sync=([A-Za-z0-9_-]{32,})/); const key = m ? m[1] : v;
+          if (!/^[A-Za-z0-9_-]{32,}$/.test(key)) { toast('Ungültiger Schlüssel'); return; }
+          connectSync(key, false); d.close();
+        };
+      }
+      $('#export', d).onclick = () => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' }));
+        a.download = `quest-backup-${todayISO()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      };
+      $('#import', d).onchange = async (e) => {
+        const file = e.target.files[0]; if (!file) return;
+        try {
+          const data = normalize(JSON.parse(await file.text()));
+          if (!confirm(`${data.tasks.length} Aufgaben und ${data.quests.length} Quests importieren und mit den aktuellen Daten zusammenführen?`)) return;
+          state = mergeStates(state, data); resetSnap(); stamp(true); persist(); d.close(); render(); scheduleSync(); toast('Import erfolgreich');
+        } catch (err) { toast('Import fehlgeschlagen: ' + err.message); }
+      };
+      $('#help', d).onclick = helpDialog;
+    });
+  }
+
+  function helpDialog() {
+    const rows = [['1 – 6', 'Home, Plan, Kalender, Fokus, Quests, Review'], ['⌘K oder /', 'Suchen & springen'], ['N', 'Neue Aufgabe'], ['Leertaste', 'Fokus: Start / Pause'], ['Enter', 'Fokus: Abschließen'], ['Esc', 'Schließen / zurück']];
+    openDialog(`<h2>Tastenkürzel</h2><table style="width:100%;font-size:13px">${rows.map(([k, v]) => `<tr><td style="padding:5px 0"><kbd class="pill">${k}</kbd></td><td class="muted">${v}</td></tr>`).join('')}</table>
+      <p class="small muted">Tipp: Beim Hinzufügen kannst du mit <b>#Questname</b> direkt eine Quest zuordnen.</p>
+      <div class="dlg-actions"><button class="btn gold" data-close>OK</button></div>`);
+  }
+
+  // ---------- Command palette ----------
+  function openPalette() {
+    const p = $('#palette'); p.hidden = false;
+    p.innerHTML = `<div class="box"><input placeholder="Aufgabe suchen oder Ansicht öffnen…" autocomplete="off" /><div class="res"></div></div>`;
+    const input = $('input', p), res = $('.res', p);
+    let items = [], sel = 0;
+    const views = Object.entries(TITLES).map(([k, v]) => ({ type: 'view', id: k, label: v, hint: 'Ansicht' }));
+    const draw = () => {
+      const q = input.value.trim().toLowerCase();
+      const vs = views.filter((v) => !q || v.label.toLowerCase().includes(q));
+      const ts = q ? state.tasks.filter((t) => t.title.toLowerCase().includes(q)).slice(0, 30) : state.tasks.filter((t) => !t.done && t.date === todayISO()).slice(0, 8);
+      const qs = state.quests.filter((x) => q && x.name.toLowerCase().includes(q));
+      items = [...vs, ...qs.map((x) => ({ type: 'quest', id: x.id, label: x.name, hint: 'Quest', color: x.color })),
+        ...ts.map((t) => ({ type: 'task', id: t.id, label: t.title, hint: (t.done ? '✓ ' : '') + (t.date ? fmtDay(t.date) : ''), color: qColor(t.questId) }))];
+      sel = Math.min(sel, Math.max(0, items.length - 1));
+      res.innerHTML = items.map((it, i) => `<div class="it${i === sel ? ' sel' : ''}" data-i="${i}" style="--qc:${it.color || 'var(--dim)'}">${it.type === 'view' ? '→' : '<i></i>'}<span>${esc(it.label)}</span><small>${esc(it.hint)}</small></div>`).join('') || '<div class="empty" style="padding:12px">Nichts gefunden</div>';
+    };
+    const choose = (it) => {
+      if (!it) return; closePalette();
+      if (it.type === 'view') go(it.id);
+      else if (it.type === 'quest') { go('quests'); questDialog(it.id); }
+      else taskDialog(it.id);
+    };
+    input.oninput = () => { sel = 0; draw(); };
+    input.onkeydown = (e) => {
+      if (e.key === 'ArrowDown') { sel = Math.min(items.length - 1, sel + 1); draw(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { sel = Math.max(0, sel - 1); draw(); e.preventDefault(); }
+      else if (e.key === 'Enter') { choose(items[sel]); e.preventDefault(); }
+      else if (e.key === 'Escape') closePalette();
+    };
+    res.onclick = (e) => { const el = e.target.closest('[data-i]'); if (el) choose(items[Number(el.dataset.i)]); };
+    p.onclick = (e) => { if (e.target === p) closePalette(); };
+    draw(); input.focus();
+  }
+  const fmtDay = (iso) => { const t = todayISO(); if (iso === t) return 'Heute'; if (iso === addDays(t, 1)) return 'Morgen'; if (iso === addDays(t, -1)) return 'Gestern'; const d = fromISO(iso); return `${WD[d.getDay()]} ${d.getDate()}. ${MON[d.getMonth()]}`; };
+  function closePalette() { $('#palette').hidden = true; $('#palette').innerHTML = ''; }
+
+  // ---------- Toast ----------
+  let toastT;
   function toast(msg, undo) {
     const el = $('#toast');
     el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button>Rückgängig</button>' : ''}`;
     if (undo) $('button', el).onclick = () => { undo(); el.classList.remove('show'); };
-    el.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove('show'), 4000);
+    el.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('show'), 4200);
   }
 
-  function projectDialog(project) {
-    const dlg = $('#dialog');
-    let color = project?.color || COLORS[(state.projects.length * 3) % COLORS.length];
-    dlg.innerHTML = `<form method="dialog">
-      <h2>${project ? 'Projekt bearbeiten' : 'Neues Projekt'}</h2>
-      <input class="field-input" name="name" placeholder="Name" value="${esc(project?.name || '')}" required maxlength="60" />
-      <div class="colors">${COLORS.map((c) => `<button type="button" data-color="${c}" style="background:${c}" class="${c === color ? 'sel' : ''}"></button>`).join('')}</div>
-      <div class="actions">
-        ${project ? '<button type="button" class="danger-btn left" data-act="delete">Löschen</button>' : ''}
-        <button type="button" class="secondary-btn" data-act="cancel">Abbrechen</button>
-        <button type="submit" class="primary-btn">Speichern</button>
-      </div></form>`;
-    $$('.colors button', dlg).forEach((b) => b.onclick = () => {
-      color = b.dataset.color; $$('.colors button', dlg).forEach((x) => x.classList.toggle('sel', x === b));
-    });
-    $('[data-act=cancel]', dlg).onclick = () => dlg.close();
-    const del = $('[data-act=delete]', dlg);
-    if (del) del.onclick = () => {
-      const n = state.tasks.filter((t) => t.projectId === project.id).length;
-      if (!confirm(`Projekt „${project.name}“ löschen?${n ? `\n${n} Aufgabe(n) werden in den Eingang verschoben.` : ''}`)) return;
-      state.tasks.forEach((t) => { if (t.projectId === project.id) t.projectId = null; });
-      state.projects = state.projects.filter((p) => p.id !== project.id);
-      ui.view = 'inbox'; saveUI(); dlg.close(); commit();
+  // ================= Events =================
+  function go(view) { ui.view = view; saveUI(); render(); window.scrollTo(0, 0); }
+
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-act]'); if (!el) return;
+    const act = el.dataset.act, id = el.dataset.id;
+    switch (act) {
+      case 'go': go(el.dataset.view); break;
+      case 'toggle': toggleDone(id); break;
+      case 'start': startTask(id); break;
+      case 'pause': pauseTimer(); break;
+      case 'complete': completeTask(id); break;
+      case 'edit-task': taskDialog(id); break;
+      case 'edit-quest': questDialog(id); break;
+      case 'new-quest': questDialog(null); break;
+      case 'edit-session': sessionDialog(id); break;
+      case 'add-session': sessionDialog(null); break;
+      case 'recurring': recurringDialog(); break;
+      case 'settings': settingsDialog(); break;
+      case 'palette': openPalette(); break;
+      case 'showdone': ui.showDone = !ui.showDone; render(); break;
+      case 'pos': ui.addPos = el.dataset.pos; saveUI(); $$('[data-act="pos"]').forEach((b) => b.classList.toggle('on', b.dataset.pos === ui.addPos)); break;
+      case 'qtab': ui.questTab = el.dataset.tab; saveUI(); render(); break;
+      case 'plan-shift': ui.planStart = addDays(ui.planStart, Number(el.dataset.n)); render(); break;
+      case 'plan-today': ui.planStart = addDays(todayISO(), -2); render(); break;
+      case 'cal-shift': ui.calWeek = addDays(ui.calWeek, Number(el.dataset.n)); render(); break;
+      case 'cal-today': ui.calWeek = weekStart(todayISO()); render(); break;
+      case 'rev-shift': ui.reviewWeek = addDays(ui.reviewWeek, Number(el.dataset.n)); render(); break;
+      case 'rev-today': ui.reviewWeek = weekStart(todayISO()); render(); break;
+      case 'move-overdue': {
+        const t = todayISO(); const list = state.tasks.filter((x) => !x.done && x.date && x.date < t);
+        list.forEach((x) => { x.date = t; x.order = orderFor(t, 'bottom'); }); commit(); toast(`${list.length} Aufgabe(n) auf heute verschoben`); break;
+      }
+    }
+  });
+
+  document.addEventListener('submit', (e) => {
+    const f = e.target.closest('[data-form="add"]'); if (!f) return;
+    e.preventDefault();
+    const input = $('input', f); const raw = input.value.trim(); if (!raw) return;
+    let { title, questId } = parseQuestTag(raw);
+    if (!title) return;
+    if (!questId && f.dataset.mode === 'quest') questId = $('select[data-role="quest"]', f)?.value || null;
+    if (!questId && f.dataset.mode === 'plan' && ui.planFilter && ui.planFilter !== 'none') questId = ui.planFilter;
+    if (f.dataset.mode === 'quest' && !questId && !state.quests.length) { toast('Lege zuerst eine Quest an'); questDialog(null); return; }
+    const t = addTask({ title, questId, date: f.dataset.date });
+    if (f.dataset.mode === 'focus') { ui.focusPick = t.id; render(); return; }
+    const again = $(`form[data-form="add"][data-date="${f.dataset.date}"][data-mode="${f.dataset.mode}"] input`);
+    again?.focus();
+  });
+
+  document.addEventListener('change', (e) => {
+    const r = e.target.dataset.role;
+    if (r === 'planfilter') { ui.planFilter = e.target.value; render(); }
+    if (r === 'focuspick') { ui.focusPick = e.target.value; render(); }
+    if (r === 'quest') ui.lastQuest = e.target.value;
+  });
+
+  document.addEventListener('input', (e) => {
+    const rf = e.target.dataset.rf; if (!rf) return;
+    const ws = e.target.closest('[data-review]').dataset.review;
+    let r = state.reviews.find((x) => x.id === 'w_' + ws);
+    if (!r) { r = { id: 'w_' + ws, week: ws }; state.reviews.push(r); }
+    r[rf] = e.target.value; save();
+  });
+
+  // Drag & Drop
+  let dragId = null;
+  document.addEventListener('dragstart', (e) => {
+    const c = e.target.closest?.('.tcard'); if (!c) return;
+    dragId = c.dataset.task; c.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId);
+  });
+  document.addEventListener('dragend', () => { dragId = null; $$('.dragging,.drop-before,.drop').forEach((x) => x.classList.remove('dragging', 'drop-before', 'drop')); });
+  document.addEventListener('dragover', (e) => {
+    if (!dragId) return;
+    const list = e.target.closest?.('[data-drop-date]'); if (!list) return;
+    e.preventDefault();
+    $$('.drop-before,.drop').forEach((x) => x.classList.remove('drop-before', 'drop'));
+    const over = e.target.closest('.tcard');
+    if (over && over.dataset.task !== dragId) over.classList.add('drop-before'); else list.classList.add('drop');
+  });
+  document.addEventListener('drop', (e) => {
+    if (!dragId) return;
+    const list = e.target.closest?.('[data-drop-date]'); if (!list) return;
+    e.preventDefault();
+    const t = getTask(dragId); const date = list.dataset.dropDate;
+    const over = e.target.closest('.tcard');
+    if (over && over.dataset.task !== dragId) {
+      const target = getTask(over.dataset.task);
+      const sameDay = state.tasks.filter((x) => x.date === target.date && x.id !== t.id).sort((a, b) => a.order - b.order);
+      const i = sameDay.indexOf(target);
+      t.date = target.date;
+      t.order = i <= 0 ? target.order - 1 : (sameDay[i - 1].order + target.order) / 2;
+    } else if (t.date !== date) { t.date = date; t.order = orderFor(date, 'bottom'); }
+    dragId = null; commit();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#palette').hidden ? openPalette() : closePalette(); return; }
+    if (!$('#palette').hidden || dlg().open) return;
+    if (isTyping()) { if (e.key === 'Escape') document.activeElement.blur(); return; }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const views = ['home', 'plan', 'calendar', 'focus', 'quests', 'review'];
+    if (/^[1-6]$/.test(e.key)) { go(views[Number(e.key) - 1]); return; }
+    if (e.key === '/') { e.preventDefault(); openPalette(); return; }
+    if (e.key === 'n' || e.key === 'N') { e.preventDefault(); if (!['home', 'plan'].includes(ui.view)) go('home'); $('form[data-form="add"] input')?.focus(); return; }
+    if (ui.view === 'focus') {
+      if (e.key === ' ') { e.preventDefault(); const r = running(); if (r) pauseTimer(); else { const b = $('[data-act="start"]'); b && startTask(b.dataset.id); } }
+      if (e.key === 'Enter') { const b = $('.focus [data-act="complete"]'); b && completeTask(b.dataset.id); }
+      if (e.key === 'Escape') go('home');
+    }
+  });
+
+  // ================= Sync (Supabase) =================
+  const SB_URL = 'https://eateylhfvzdefutzemgn.supabase.co';
+  const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVhdGV5bGhmdnpkZWZ1dHplbWduIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUxODc2MjUsImV4cCI6MjExMDc2MzYyNX0.LQbg1_qFb9LhCQ3vWVWwtl2DE2tfzT3NujfeIdwKsjA';
+  const SYNC_KEY = 'quest.sync';
+  let sync = (() => { try { return JSON.parse(localStorage.getItem(SYNC_KEY) || 'null'); } catch { return null; } })();
+  let syncStatus = sync ? 'busy' : 'off', syncing = false, syncAgain = false, syncT;
+  const saveSync = () => localStorage.setItem(SYNC_KEY, JSON.stringify(sync));
+  const newKey = () => { const b = crypto.getRandomValues(new Uint8Array(32)); return btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+  const syncLink = () => `${location.origin}${location.pathname}#sync=${sync.key}`;
+  const syncLabel = () => ({ ok: 'Synchronisiert ✓', busy: 'Synchronisiere…', err: 'Fehler – versuche es erneut', offline: 'Offline – wird nachgeholt', off: 'Aus' }[syncStatus]);
+  function setSyncStatus(s) {
+    syncStatus = s; const el = $('#syncdot');
+    el.className = 'syncdot ' + ({ ok: 'ok', busy: 'busy', err: 'err', offline: 'err' }[s] || '');
+    el.title = 'Sync: ' + syncLabel();
+  }
+  async function rpc(fn, body) {
+    const r = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+  const payload = (s) => ({ v: 1, quests: s.quests, tasks: s.tasks, sessions: s.sessions, recurring: s.recurring, reviews: s.reviews, settings: s.settings, deleted: s.deleted });
+  const canon = (o) => (Array.isArray(o) ? `[${o.map(canon).join(',')}]` : o && typeof o === 'object' ? `{${Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => JSON.stringify(k) + ':' + canon(o[k])).join(',')}}` : JSON.stringify(o));
+
+  function mergeStates(a, b) {
+    b = normalize(b);
+    const deleted = { ...a.deleted };
+    for (const [id, t] of Object.entries(b.deleted)) deleted[id] = Math.max(deleted[id] || 0, t);
+    const mergeColl = (x, y) => {
+      const m = new Map();
+      for (const it of [...x, ...y]) { const cur = m.get(it.id); if (!cur || (it.updatedAt || 0) > (cur.updatedAt || 0)) m.set(it.id, it); }
+      return [...m.values()].filter((it) => !(deleted[it.id] && deleted[it.id] >= (it.updatedAt || 0)));
     };
-    $('form', dlg).onsubmit = (e) => {
-      e.preventDefault();
-      const name = $('[name=name]', dlg).value.trim(); if (!name) return;
-      if (project) Object.assign(project, { name, color });
-      else { const p = { id: uid(), name, color }; state.projects.push(p); ui.view = 'project:' + p.id; saveUI(); }
-      dlg.close(); commit();
-    };
-    dlg.showModal();
-    $('[name=name]', dlg).focus();
+    const out = { ...a, deleted };
+    COLLS.forEach((c) => (out[c] = mergeColl(a[c], b[c])));
+    out.settings = (b.settings.updatedAt || 0) > (a.settings.updatedAt || 0) ? b.settings : a.settings;
+    // Nur eine laufende Sitzung: die jüngste gewinnt
+    const runs = out.sessions.filter((s) => s.end == null).sort((x, y) => y.start - x.start);
+    runs.slice(1).forEach((s) => { const i = out.sessions.indexOf(s); out.sessions[i] = { ...s, end: runs[0].start, updatedAt: now() }; });
+    return out;
   }
 
-  function helpDialog() {
-    const dlg = $('#dialog');
-    const rows = [
-      ['N', 'Neue Aufgabe'], ['/', 'Suchen'], ['Esc', 'Detailansicht schließen'],
-      ['↑ / ↓  oder  J / K', 'Aufgabe auswählen'], ['Enter', 'Ausgewählte Aufgabe öffnen'], ['X', 'Ausgewählte Aufgabe erledigen'],
-      ['Entf', 'Ausgewählte Aufgabe löschen'], ['1 – 6', 'Eingang, Heute, Demnächst, Alle, Erledigt, Statistik'], ['B', 'Liste/Board umschalten'], ['?', 'Diese Hilfe'],
-    ];
-    dlg.innerHTML = `<h2>Tastenkürzel & Tipps</h2>
-      <table class="shortcuts">${rows.map(([k, v]) => `<tr><td><kbd>${k}</kbd></td><td>${v}</td></tr>`).join('')}</table>
-      <p class="small-muted">Schnelleingabe: „Zahnarzt anrufen morgen #privat !1 @Privat“ setzt Termin, Tag, Priorität und Projekt automatisch.<br>
-      Aufgaben per Drag &amp; Drop sortieren, auf ein Projekt in der Seitenleiste ziehen oder im Board zwischen Spalten verschieben.<br>
-      Deine Daten bleiben nur in diesem Browser gespeichert – nutze Export/Import für Backups oder zum Umziehen auf ein anderes Gerät.</p>
-      <div class="actions"><button class="primary-btn" onclick="this.closest('dialog').close()">Alles klar</button></div>`;
-    dlg.showModal();
+  function scheduleSync(delay = 1200) { if (!sync) return; clearTimeout(syncT); syncT = setTimeout(doSync, delay); }
+  async function doSync() {
+    if (!sync) return;
+    if (syncing) { syncAgain = true; return; }
+    syncing = true; setSyncStatus('busy');
+    try {
+      clearTimeout(saveT); if (stamp()) persist();
+      for (let i = 0; i < 5; i++) {
+        const remote = await rpc('tm_pull', { p_key: sync.key });
+        if (remote.exists) {
+          const merged = mergeStates(state, remote.data);
+          if (canon(payload(merged)) !== canon(payload(state))) {
+            const focused = isTyping();
+            state = merged; resetSnap(); persist();
+            if (!focused && !dlg().open) render();
+          }
+          if (canon(payload(state)) === canon(payload(normalize(remote.data)))) { sync.version = remote.version; saveSync(); break; }
+        }
+        const res = await rpc('tm_push', { p_key: sync.key, p_data: payload(state), p_base_version: remote.exists ? remote.version : 0 });
+        if (res.ok) { sync.version = res.version; saveSync(); break; }
+      }
+      setSyncStatus('ok');
+    } catch (err) {
+      console.warn('Sync', err);
+      setSyncStatus(navigator.onLine ? 'err' : 'offline');
+    } finally {
+      syncing = false;
+      if (syncAgain) { syncAgain = false; doSync(); }
+    }
   }
-
-  // ---------- Navigation ----------
-  function setView(v) {
-    ui.view = v; ui.search = ''; $('#search').value = '';
-    saveUI(); closeSidebar(); render();
-  }
-  function openSidebar() { $('#sidebar').classList.add('open'); $('#backdrop').classList.add('show'); }
-  function closeSidebar() { $('#sidebar').classList.remove('open'); $('#backdrop').classList.remove('show'); }
-
-  // ---------- Events ----------
-  function bind() {
-    document.addEventListener('click', (e) => {
-      const nav = e.target.closest('[data-view]');
-      if (nav) { setView(nav.dataset.view); return; }
-    });
-    $('#menu-btn').onclick = openSidebar;
-    $('#more-btn').onclick = openSidebar;
-    $('#fab').onclick = () => {
-      if (ui.view === 'stats' || ui.view === 'done') setView('inbox');
-      const input = $('#quick-input');
-      input.scrollIntoView({ block: 'center' });
-      input.focus();
-    };
-    $('#backdrop').onclick = closeSidebar;
-    $('#add-project').onclick = () => projectDialog();
-    $('#project-menu').onclick = () => { const p = getProject(ui.view.slice(8)); if (p) projectDialog(p); };
-    $('#help-btn').onclick = helpDialog;
-    $('#theme-toggle').onclick = () => { state.settings.theme = state.settings.theme === 'dark' ? 'light' : 'dark'; commit(); };
-    $('#sort').onchange = (e) => { ui.sort = e.target.value; saveUI(); render(); };
-    $$('#layout-toggle button').forEach((b) => (b.onclick = () => { ui.layout = b.dataset.layout; saveUI(); render(); }));
-    $('#search').addEventListener('input', (e) => { ui.search = e.target.value.trim(); render(); });
-
-    $('#quick-add').onsubmit = (e) => {
-      e.preventDefault();
-      const input = $('#quick-input');
-      const raw = input.value.trim(); if (!raw) return;
-      const parsed = parseQuick(raw);
-      if (!parsed.title) { toast('Bitte einen Titel eingeben'); return; }
-      if (ui.view === 'done' || ui.view === 'stats') ui.view = 'inbox';
-      addTask(parsed);
-      input.value = '';
-      const bits = [parsed.due && '📅 ' + fmtDue(parsed.due), parsed.priority && '!' + parsed.priority, ...parsed.tags.map((t) => '#' + t), parsed.projectId && '@' + getProject(parsed.projectId).name].filter(Boolean);
-      toast('➕ Hinzugefügt' + (bits.length ? ' · ' + bits.join(' ') : ''));
-    };
-
-    // Task list clicks
-    $('#content').addEventListener('click', (e) => {
-      const taskEl = e.target.closest('.task'); if (!taskEl) return;
-      const id = taskEl.dataset.id;
-      if (e.target.closest('[data-action=toggle]')) { toggleDone(id); return; }
-      openDetail(id);
-    });
-
-    // Detail events
-    const d = $('#detail');
-    d.addEventListener('input', (e) => {
-      const t = getTask(ui.selected); if (!t) return;
-      const f = e.target.dataset.field;
-      if (f === 'title' || f === 'notes' || f === 'tags') {
-        updateField(t, f, e.target.value);
-        if (f === 'title') autoGrow(e.target);
-        save(); renderContent(); if (f === 'tags') renderSidebar();
-      }
-      const sid = e.target.dataset.sub;
-      if (sid) { const s = t.subtasks.find((x) => x.id === sid); if (s) { s.title = e.target.value; save(); renderContent(); } }
-    });
-    d.addEventListener('change', (e) => {
-      const t = getTask(ui.selected); if (!t) return;
-      const f = e.target.dataset.field;
-      if (f && !['title', 'notes', 'tags'].includes(f)) {
-        updateField(t, f, e.target.value);
-        d.dataset.for = ''; commit();
-      }
-    });
-    d.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-d]'); if (!btn) return;
-      const t = getTask(ui.selected); if (!t) return;
-      const act = btn.dataset.d;
-      if (act === 'close') closeDetail();
-      else if (act === 'delete') deleteTask(t.id);
-      else if (act === 'duplicate') duplicateTask(t.id);
-      else if (act === 'toggle') { toggleDone(t.id); d.dataset.for = ''; renderDetail(); }
-      else if (act === 'subtoggle' || act === 'subdelete') {
-        const sid = btn.closest('.subtask').dataset.sid;
-        if (act === 'subtoggle') { const s = t.subtasks.find((x) => x.id === sid); s.done = !s.done; }
-        else t.subtasks = t.subtasks.filter((x) => x.id !== sid);
-        d.dataset.for = ''; commit();
-      }
-    });
-    d.addEventListener('keydown', (e) => {
-      if (e.target.dataset.d === 'subadd' && e.key === 'Enter') {
-        e.preventDefault();
-        const v = e.target.value.trim(); if (!v) return;
-        const t = getTask(ui.selected);
-        t.subtasks.push({ id: uid(), title: v, done: false });
-        d.dataset.for = ''; commit();
-        $('[data-d=subadd]', d)?.focus();
-      }
-      if (e.target.dataset.field === 'title' && e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
-    });
-
-    // Export / Import
-    $('#export-btn').onclick = () => {
-      const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `tasks-backup-${todayISO()}.json`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-      toast('⬇️ Backup heruntergeladen');
-    };
-    $('#import-input').onchange = async (e) => {
-      const file = e.target.files[0]; if (!file) return;
+  async function connectSync(key, isNew) {
+    sync = { key, version: 0 }; saveSync(); setSyncStatus('busy');
+    if (!isNew) {
       try {
-        const data = migrate(JSON.parse(await file.text()));
-        if (!Array.isArray(data.tasks)) throw new Error('Ungültige Datei');
-        if (!confirm(`${data.tasks.length} Aufgaben und ${data.projects.length} Projekte importieren?\nDie aktuellen Daten werden ersetzt.`)) return;
-        const prev = state; state = data; closeDetail(); commit();
-        toast('⬆️ Import erfolgreich', () => { state = prev; commit(); });
-      } catch (err) { toast('Import fehlgeschlagen: ' + err.message); }
-      e.target.value = '';
-    };
-
-    bindDragAndDrop();
-    bindKeyboard();
+        const remote = await rpc('tm_pull', { p_key: key });
+        if (remote.exists) {
+          const hasLocal = state.tasks.length || state.quests.length || state.sessions.length;
+          state = mergeStates(hasLocal ? state : emptyState(), remote.data); resetSnap(); persist(); render();
+          toast(hasLocal ? '☁︎ Verbunden – Daten zusammengeführt' : '☁︎ Verbunden – Daten geladen');
+        } else toast('☁︎ Verbunden');
+      } catch { toast('Verbindung fehlgeschlagen – wird erneut versucht'); }
+    } else toast('☁︎ Synchronisierung aktiviert');
+    doSync();
   }
-
-  function bindDragAndDrop() {
-    let dragId = null;
-    const content = $('#content');
-    content.addEventListener('dragstart', (e) => {
-      const el = e.target.closest('.task'); if (!el) return;
-      dragId = el.dataset.id; el.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', dragId);
-    });
-    content.addEventListener('dragend', () => {
-      dragId = null;
-      $$('.dragging, .drag-over').forEach((x) => x.classList.remove('dragging', 'drag-over'));
-      $$('.drop-target').forEach((x) => x.classList.remove('drop-target'));
-    });
-    content.addEventListener('dragover', (e) => {
-      if (!dragId) return;
-      e.preventDefault();
-      $$('.drag-over').forEach((x) => x.classList.remove('drag-over'));
-      const over = e.target.closest('.task');
-      if (over && over.dataset.id !== dragId) over.classList.add('drag-over');
-      else { const col = e.target.closest('.column'); if (col) col.classList.add('drag-over'); }
-    });
-    content.addEventListener('drop', (e) => {
-      if (!dragId) return;
-      e.preventDefault();
-      const t = getTask(dragId);
-      const col = e.target.closest('.column');
-      if (col && col.dataset.status !== t.status) {
-        updateField(t, 'status', col.dataset.status);
-        if (col.dataset.status === 'done') toast('✅ Erledigt');
-      }
-      const over = e.target.closest('.task');
-      if (over && over.dataset.id !== dragId) {
-        const target = getTask(over.dataset.id);
-        ui.sort = 'manual'; saveUI();
-        normalizeOrder();
-        const to = target.order;
-        state.tasks.forEach((x) => { if (x.id !== t.id && x.order >= to) x.order += 1; });
-        t.order = to;
-        normalizeOrder();
-      }
-      commit();
-    });
-    // Auf Projekte in der Sidebar ziehen
-    const projNav = $('#nav-projects');
-    const inbox = $('[data-view=inbox]');
-    [projNav, inbox].forEach((zone) => {
-      zone.addEventListener('dragover', (e) => {
-        const btn = e.target.closest('[data-project-drop], [data-view=inbox]'); if (!btn || !dragId) return;
-        e.preventDefault(); $$('.drop-target').forEach((x) => x.classList.remove('drop-target')); btn.classList.add('drop-target');
-      });
-      zone.addEventListener('dragleave', (e) => { e.target.closest?.('.nav-item')?.classList.remove('drop-target'); });
-      zone.addEventListener('drop', (e) => {
-        const btn = e.target.closest('[data-project-drop], [data-view=inbox]'); if (!btn || !dragId) return;
-        e.preventDefault(); e.stopPropagation();
-        const t = getTask(dragId);
-        t.projectId = btn.dataset.projectDrop || null;
-        const p = getProject(t.projectId);
-        toast(`📁 Verschoben nach ${p ? p.name : 'Eingang'}`);
-        btn.classList.remove('drop-target');
-        commit();
-      });
-    });
+  function handleHash() {
+    const m = location.hash.match(/sync=([A-Za-z0-9_-]{32,})/);
+    if (!m) return;
+    history.replaceState(null, '', location.pathname + location.search);
+    if (sync && sync.key === m[1]) { doSync(); return; }
+    if (sync && !confirm('Dieses Gerät ist schon mit einem anderen Sync verbunden. Wechseln?')) return;
+    connectSync(m[1], false);
   }
+  setInterval(() => { if (sync && document.visibilityState === 'visible') doSync(); }, 15000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { doSync(); render(); } });
+  window.addEventListener('online', () => doSync());
+  window.addEventListener('hashchange', handleHash);
+  window.addEventListener('storage', (e) => { if (e.key === KEY && e.newValue) { state = normalize(JSON.parse(e.newValue)); resetSnap(); render(); } });
 
-  function bindKeyboard() {
-    document.addEventListener('keydown', (e) => {
-      const tag = (e.target.tagName || '').toLowerCase();
-      const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
-      if (e.key === 'Escape') {
-        if ($('#dialog').open) return;
-        if (typing) { e.target.blur(); if (e.target.id === 'search' && ui.search) { ui.search = ''; e.target.value = ''; render(); } return; }
-        if (ui.selected) closeDetail(); else closeSidebar();
-        return;
-      }
-      if (typing || e.metaKey || e.ctrlKey || e.altKey || $('#dialog').open) return;
-      const ids = $$('#content .task').map((x) => x.dataset.id);
-      const cur = ids.indexOf(ui.selected);
-      const views = ['inbox', 'today', 'upcoming', 'all', 'done', 'stats'];
-      switch (e.key) {
-        case 'n': case 'N': e.preventDefault(); if (ui.view === 'stats' || ui.view === 'done') setView('inbox'); $('#quick-input').focus(); break;
-        case '/': e.preventDefault(); $('#search').focus(); break;
-        case '?': helpDialog(); break;
-        case 'b': case 'B': ui.layout = ui.layout === 'list' ? 'board' : 'list'; saveUI(); render(); break;
-        case 'ArrowDown': case 'j': if (ids.length) { e.preventDefault(); openDetail(ids[Math.min(ids.length - 1, cur + 1)]); scrollSel(); } break;
-        case 'ArrowUp': case 'k': if (ids.length) { e.preventDefault(); openDetail(ids[Math.max(0, cur - 1)]); scrollSel(); } break;
-        case 'Enter': if (ui.selected) { $('#detail .title-input')?.focus(); e.preventDefault(); } break;
-        case 'x': case 'X': if (ui.selected) toggleDone(ui.selected); break;
-        case 'Delete': case 'Backspace': if (ui.selected) { e.preventDefault(); deleteTask(ui.selected); } break;
-        default:
-          if (/^[1-6]$/.test(e.key)) setView(views[Number(e.key) - 1]);
-      }
-    });
-  }
-  function scrollSel() { $('#content .task.selected')?.scrollIntoView({ block: 'nearest' }); }
-
-  // Tageswechsel erkennen (z. B. App über Nacht offen)
-  let lastDay = todayISO();
-  setInterval(() => { if (todayISO() !== lastDay) { lastDay = todayISO(); render(); } }, 60000);
-  // Sync zwischen mehreren Tabs
-  window.addEventListener('storage', (e) => { if (e.key === KEY && e.newValue) { state = migrate(JSON.parse(e.newValue)); render(); } });
-
-  // ---------- Start ----------
-  if (!getProject(ui.view.slice(8)) && ui.view.startsWith('project:')) ui.view = 'inbox';
-  bind();
+  // ================= Start =================
+  stamp(true);
+  persist();
+  if (!TITLES[ui.view]) ui.view = 'home';
   render();
-  save();
+  setSyncStatus(syncStatus);
+  setInterval(tick, 1000);
+  handleHash();
+  if (sync) doSync();
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
-
-  // Für Tests
-  window.__tm = { parseQuick, get state() { return state; }, nextDue };
+  window.__q = { get state() { return state; }, mergeStates, doSync, go };
 })();

@@ -1,5 +1,5 @@
 // Service Worker: macht die App offline nutzbar.
-const CACHE = 'taskmanager-v2';
+const CACHE = 'quest-v1';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg'];
 
 self.addEventListener('install', (e) => {
@@ -10,7 +10,7 @@ self.addEventListener('activate', (e) => {
 });
 // Network first, Cache als Fallback – so kommen Updates sofort an.
 self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET') return;
+  if (e.request.method !== 'GET' || !e.request.url.startsWith(self.location.origin)) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return res; })
