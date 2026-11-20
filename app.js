@@ -290,6 +290,7 @@
       <div class="home-grid">
         <div>
           ${overdue.length ? `<div class="overdue-hint">⏳ ${overdue.length} offene Aufgabe${overdue.length > 1 ? 'n' : ''} aus den letzten Tagen<button data-act="move-overdue">Auf heute holen</button></div>` : ''}
+          ${!sync ? `<div class="overdue-hint">☁︎ Sync ist aus – Mac und Handy zeigen noch nicht dieselben Aufgaben.<button data-act="sync-setup">Jetzt verbinden</button></div>` : ''}
           ${!state.quests.length ? `<div class="overdue-hint">✦ Lege zuerst deine großen Ziele als <b>Quests</b> an – jede Aufgabe zahlt dann auf eine Quest ein.<button data-act="new-quest">Quest anlegen</button></div>` : ''}
           <div class="section">
             <div class="section-head"><span class="label">Quest-Arbeit</span></div>
@@ -766,14 +767,12 @@
       <div class="field"><label>Wochenziel Quest-Stunden</label><input type="number" id="wt" min="1" max="100" value="${state.settings.weeklyTarget}" /></div>
       <hr class="sep" />
       <div class="field"><label>Mac & Handy synchronisieren</label>
-        ${sync ? `<p class="small muted" style="margin-top:0">Status: <b style="color:var(--text)">${syncLabel()}</b>. Öffne diesen Link auf deinem anderen Gerät, um es zu verbinden:</p>
+        ${sync ? `<p class="small muted" style="margin-top:0">Status: <b style="color:var(--text)">${syncLabel()}</b>. Auf weiteren Geräten einfach mit demselben Sync-Passwort anmelden – oder diesen Link öffnen:</p>
           <div class="keybox" id="synclink">${esc(link)}</div>
           <div class="dlg-actions" style="justify-content:flex-start"><button class="btn gold" id="copy">Link kopieren</button>${navigator.share ? '<button class="btn" id="share">Teilen…</button>' : ''}<button class="btn" id="syncnow">Jetzt synchronisieren</button><button class="btn danger" id="unlink">Trennen</button></div>
           <p class="small muted">Wer diesen Link hat, kann deine Aufgaben sehen – teile ihn nur mit dir selbst.</p>`
-        : `<p class="small muted" style="margin-top:0">Deine Aufgaben werden verschlüsselt übertragen und auf allen verbundenen Geräten gleich angezeigt. Kein Konto nötig.</p>
-          <div class="dlg-actions" style="justify-content:flex-start"><button class="btn gold" id="enable">Synchronisierung aktivieren</button></div>
-          <p class="small muted">Schon auf einem anderen Gerät aktiviert? Öffne dort den Sync-Link – oder füge ihn hier ein:</p>
-          <div style="display:flex;gap:8px"><input class="input" id="joinkey" placeholder="Sync-Link oder Schlüssel" /><button class="btn" id="join">Verbinden</button></div>`}
+        : `<p class="small muted" style="margin-top:0">Sync ist aus. Melde dich auf jedem Gerät einmal mit demselben Sync-Passwort an – danach gleichen sich Mac und Handy automatisch ab.</p>
+          <div class="dlg-actions" style="justify-content:flex-start"><button class="btn gold" id="pwsetup">☁︎ Mit Sync-Passwort verbinden</button></div>`}
       </div>
       <hr class="sep" />
       <div class="field"><label>Daten</label><div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -788,12 +787,7 @@
         $('#syncnow', d).onclick = () => { doSync(); };
         $('#unlink', d).onclick = () => { if (!confirm('Dieses Gerät vom Sync trennen? Die Daten bleiben hier erhalten.')) return; sync = null; localStorage.removeItem(SYNC_KEY); setSyncStatus('off'); d.close(); };
       } else {
-        $('#enable', d).onclick = async () => { connectSync(newKey(), true); d.close(); settingsDialog(); };
-        $('#join', d).onclick = () => {
-          const v = $('#joinkey', d).value.trim(); const m = v.match(/sync=([A-Za-z0-9_-]{32,})/); const key = m ? m[1] : v;
-          if (!/^[A-Za-z0-9_-]{32,}$/.test(key)) { toast('Ungültiger Schlüssel'); return; }
-          connectSync(key, false); d.close();
-        };
+        $('#pwsetup', d).onclick = () => { d.close(); syncPasswordDialog(); };
       }
       $('#export', d).onclick = () => {
         const a = document.createElement('a');
@@ -809,6 +803,52 @@
         } catch (err) { toast('Import fehlgeschlagen: ' + err.message); }
       };
       $('#help', d).onclick = helpDialog;
+    });
+  }
+
+
+  // ---------- Sync per Passwort (einmal pro Gerät) ----------
+  async function passwordToKey(pw) {
+    const enc = new TextEncoder();
+    const base = await crypto.subtle.importKey('raw', enc.encode(pw.normalize('NFC')), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode('quest-sync-v1'), iterations: 250000 }, base, 256);
+    return btoa(String.fromCharCode(...new Uint8Array(bits))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function syncPasswordDialog(firstRun = false) {
+    openDialog(`<form id="pwf" autocomplete="on"><h2>☁︎ Mac & Handy verbinden</h2>
+      <p class="small muted" style="margin-top:0">Gib auf <b>jedem Gerät einmal dasselbe Sync-Passwort</b> ein. Danach synchronisiert die App automatisch – du musst nie wieder etwas tun.</p>
+      <input type="text" name="username" value="Quest Sync" autocomplete="username" hidden readonly />
+      <div class="field"><label>Sync-Passwort</label><input type="password" class="input" name="pw" autocomplete="current-password" minlength="8" required placeholder="mind. 8 Zeichen" /></div>
+      <div class="field" id="pw2wrap" hidden><label>Neues Passwort wiederholen</label><input type="password" class="input" name="pw2" autocomplete="new-password" placeholder="zur Sicherheit nochmal" /></div>
+      <p class="small muted" id="pwmsg"></p>
+      <div class="dlg-actions">${firstRun ? '<button type="button" class="btn ghost left" data-close>Später</button>' : '<button type="button" class="btn left" data-close>Abbrechen</button>'}<button type="submit" class="btn gold" id="pwgo">Verbinden</button></div>
+    </form>`, (d) => {
+      const f = $('#pwf', d); let creating = false;
+      f.pw.focus();
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        const pw = f.pw.value; const msg = $('#pwmsg', d); const btn = $('#pwgo', d);
+        if (pw.length < 8) { msg.textContent = 'Bitte mindestens 8 Zeichen.'; return; }
+        btn.disabled = true; btn.textContent = 'Prüfe…'; msg.textContent = '';
+        try {
+          const key = await passwordToKey(pw);
+          if (!creating) {
+            const remote = await rpc('tm_pull', { p_key: key });
+            if (!remote.exists) {
+              creating = true; $('#pw2wrap', d).hidden = false; f.pw2.focus();
+              msg.textContent = 'Für dieses Passwort gibt es noch keinen Sync. Wiederhole es, um ihn neu anzulegen – nutze danach auf allen Geräten genau dieses Passwort.';
+              btn.disabled = false; btn.textContent = 'Sync anlegen'; return;
+            }
+          } else if (f.pw2.value !== pw) { msg.textContent = 'Die Passwörter stimmen nicht überein.'; btn.disabled = false; btn.textContent = 'Sync anlegen'; return; }
+          localStorage.setItem('quest.syncPrompted', '1');
+          d.close();
+          await connectSync(key, creating);
+        } catch (err) {
+          msg.textContent = 'Verbindung fehlgeschlagen – bist du online? (' + err.message + ')';
+          btn.disabled = false; btn.textContent = creating ? 'Sync anlegen' : 'Verbinden';
+        }
+      };
+      d.addEventListener('close', () => localStorage.setItem('quest.syncPrompted', '1'), { once: true });
     });
   }
 
@@ -884,6 +924,7 @@
       case 'add-session': sessionDialog(null); break;
       case 'recurring': recurringDialog(); break;
       case 'settings': settingsDialog(); break;
+      case 'sync-setup': syncPasswordDialog(); break;
       case 'palette': openPalette(); break;
       case 'showdone': ui.showDone = !ui.showDone; render(); break;
       case 'pos': ui.addPos = el.dataset.pos; saveUI(); $$('[data-act="pos"]').forEach((b) => b.classList.toggle('on', b.dataset.pos === ui.addPos)); break;
@@ -1060,8 +1101,8 @@
           toast(hasLocal ? '☁︎ Verbunden – Daten zusammengeführt' : '☁︎ Verbunden – Daten geladen');
         } else toast('☁︎ Verbunden');
       } catch { toast('Verbindung fehlgeschlagen – wird erneut versucht'); }
-    } else toast('☁︎ Synchronisierung aktiviert');
-    doSync();
+    } else toast('☁︎ Sync angelegt – auf dem anderen Gerät einfach dasselbe Passwort eingeben');
+    render(); doSync();
   }
   function handleHash() {
     const m = location.hash.match(/sync=([A-Za-z0-9_-]{32,})/);
@@ -1089,6 +1130,7 @@
   setInterval(tick, 1000);
   handleHash();
   if (sync) doSync();
+  else if (!localStorage.getItem('quest.syncPrompted') && !location.hash.includes('sync=')) setTimeout(() => { if (!sync && !dlg().open) syncPasswordDialog(true); }, 600);
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 
   window.__q = { get state() { return state; }, mergeStates, doSync, go };
