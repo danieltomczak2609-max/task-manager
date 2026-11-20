@@ -19,7 +19,9 @@
   const MON_LONG = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
   const QCOLORS = ['#a78bfa', '#c3e66e', '#f0866b', '#60a5fa', '#5eead4', '#f472b6', '#facc15', '#fb923c'];
   const QICONS = ['✦', '🚀', '🎬', '💪', '📚', '💼', '❤️', '🏠', '🎯', '💡', '🎵', '✍️'];
-  const HOUR_PX = 44;
+  let HOUR_PX = 44;
+  // Stundenhöhe passt sich der Fensterhöhe an, damit 7–23 Uhr ohne Scrollen sichtbar sind
+  const calcHourPx = () => Math.max(40, Math.min(96, Math.floor((window.innerHeight - 56 - 275) / 16)));
 
   const weekStart = (iso) => { const d = fromISO(iso); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return toISO(d); };
   const dayStartMs = (iso) => fromISO(iso).getTime();
@@ -210,6 +212,7 @@
   const TITLES = { home: 'Home', plan: 'Plan', calendar: 'Kalender', focus: 'Fokus', quests: 'Quests', review: 'Review' };
   function render() {
     const v = ui.view;
+    HOUR_PX = calcHourPx();
     $$('[data-act="go"]').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
     $('#mobile-title').textContent = TITLES[v] || '';
     const view = $('#view');
@@ -392,6 +395,7 @@
           <div class="big num">${fmtDur(q)} <small>/ ${state.settings.weeklyTarget}h Quest</small></div>
           <div class="pbar"><div style="width:${Math.min(100, (q / target) * 100)}%"></div></div></div></div>
       </div>
+      ${state.sessions.some((s) => overlap(s, a, b) > 0) ? '' : `<div class="overdue-hint">◷ Diese Woche wurde noch keine Zeit gemessen. Starte bei einer Aufgabe den ▶-Timer – oder trage Zeit nach.<button data-act="add-session">Zeit eintragen</button></div>`}
       <div class="card cal-wrap">
         <div class="weekhead"><div></div>${days.map((d) => {
           const dt = fromISO(d); const [x, y] = dayRange(d);
@@ -1068,6 +1072,9 @@
   window.addEventListener('online', () => doSync());
   window.addEventListener('hashchange', handleHash);
   window.addEventListener('storage', (e) => { if (e.key === KEY && e.newValue) { state = normalize(JSON.parse(e.newValue)); resetSnap(); render(); } });
+
+  let resizeT;
+  window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (calcHourPx() !== HOUR_PX && !isTyping()) render(); }, 200); });
 
   // ================= Start =================
   stamp(true);

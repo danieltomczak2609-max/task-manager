@@ -382,3 +382,20 @@ html, body { overflow-x: hidden; }
   .focus .ftop { width: 100%; }
   .page-head .right .btn { height: 34px; }
 }
+
+/* ---------- Große Bildschirme: volle Breite nutzen ---------- */
+.view { max-width: none; padding-left: clamp(16px, 2.5vw, 48px); padding-right: clamp(16px, 2.5vw, 48px); }
+.home-grid { grid-template-columns: minmax(0, 1.5fr) minmax(380px, 1fr); }
+.pcol { flex: 1 0 250px; }
+.cal-wrap { height: calc(100vh - var(--nav-h) - 140px); }
+.timeline-card { height: calc(100vh - var(--nav-h) - 130px); }
+.qgrid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+@media (min-width: 1800px) {
+  body { font-size: 15px; }
+  .tc-title { font-size: 14.5px; }
+  .page-head h1 { font-size: 30px; }
+  .block { font-size: 11.5px; }
+  .block .br { font-size: 11px; }
+}
+@media (max-width: 1100px) { .home-grid { grid-template-columns: 1fr; } .timeline-card { height: 520px; } }
+@media (max-width: 760px) { .pcol { flex: 0 0 84vw; } .cal-wrap { height: calc(100vh - 260px); } }
