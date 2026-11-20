@@ -518,6 +518,7 @@
       </div>
       <div class="rgrid two" style="margin-top:14px">
         <div class="card panel"><div class="label">Quest-Stunden · pro Tag</div>
+          ${perDay.some((x) => x > 0) ? '' : '<div class="empty" style="padding:8px 0 0">Diese Woche noch keine Quest-Zeit gemessen.</div>'}
           <div class="bars">${days.map((d, i) => `<div class="b${d === t ? ' cur' : ''}"><span class="t">${fmtDur(perDay[i])}</span><div class="col" style="height:${(perDay[i] / maxDay) * 140}px"></div><span class="d">${WD[fromISO(d).getDay()]}</span></div>`).join('')}</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:14px">
@@ -552,21 +553,24 @@
       </div>`;
   }
   function weeksChart(weeks, curWs) {
-    const W = 800, H = 190, pad_ = 24;
+    // HTML-Balken + SVG-Linie ohne Verzerrung (Text/Punkte bleiben bei jeder Breite sauber)
+    if (!weeks.some((w) => w.ms > 0)) {
+      return `<div class="weeks-chart empty"><div><div style="font-size:22px">◷</div>Noch keine Quest-Stunden in den letzten 8 Wochen.<br>Starte bei einer Aufgabe den ▶-Timer – hier entsteht dann dein Verlauf.</div></div>`;
+    }
     const max = Math.max(3600000, ...weeks.map((w) => w.ms));
-    const bw = (W - pad_ * 2) / weeks.length;
-    const y = (ms) => H - 24 - (ms / max) * (H - 50);
     const avgs = weeks.map((_, i) => { const sl = weeks.slice(Math.max(0, i - 3), i + 1); return sl.reduce((s, x) => s + x.ms, 0) / sl.length; });
-    let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block">`;
-    weeks.forEach((w, i) => {
-      const x = pad_ + i * bw + bw * 0.3, bh = H - 24 - y(w.ms);
-      svg += `<rect x="${x}" y="${y(w.ms)}" width="${bw * 0.4}" height="${Math.max(1, bh)}" rx="2" fill="${w.w === curWs ? '#f2c14e' : '#3fd1a5'}" opacity="${w.w === curWs ? 1 : .85}"><title>${fmtRange(w.w)}: ${fmtDur(w.ms)}</title></rect>`;
-      const d = fromISO(w.w);
-      svg += `<text x="${x + bw * 0.2}" y="${H - 6}" fill="#5a5a62" font-size="11" text-anchor="middle">${d.getDate()}.${d.getMonth() + 1}.</text>`;
-    });
-    svg += `<polyline points="${avgs.map((v, i) => `${pad_ + i * bw + bw * 0.5},${y(v)}`).join(' ')}" fill="none" stroke="#ededef" stroke-width="1.5" opacity=".8"/>`;
-    avgs.forEach((v, i) => { svg += `<circle cx="${pad_ + i * bw + bw * 0.5}" cy="${y(v)}" r="3" fill="#0a0a0b" stroke="#ededef" stroke-width="1.5"/>`; });
-    return `<div class="weeks-chart">${svg}</svg></div>`;
+    const n = weeks.length;
+    const xPct = (i) => ((i + 0.5) / n) * 100;
+    const yPct = (ms) => 100 - (ms / max) * 100;
+    const pts = avgs.map((v, i) => `${xPct(i)},${yPct(v)}`).join(' ');
+    return `<div class="weeks-chart">
+      <div class="wc-plot">
+        <div class="wc-bars">${weeks.map((w) => `<div class="wc-b${w.w === curWs ? ' cur' : ''}" title="${fmtRange(w.w)}: ${fmtDur(w.ms)}"><span class="wc-v">${w.ms ? fmtDur(w.ms) : ''}</span><div style="height:${(w.ms / max) * 100}%"></div></div>`).join('')}</div>
+        <svg class="wc-line" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points="${pts}" vector-effect="non-scaling-stroke"/></svg>
+        ${avgs.map((v, i) => `<i class="wc-dot" style="left:${xPct(i)}%;top:${yPct(v)}%" title="Ø 4 Wochen: ${fmtDur(v)}"></i>`).join('')}
+      </div>
+      <div class="wc-labels">${weeks.map((w) => { const d = fromISO(w.w); return `<span class="${w.w === curWs ? 'cur' : ''}">${d.getDate()}.${d.getMonth() + 1}.</span>`; }).join('')}</div>
+    </div>`;
   }
 
   // ---------- Running bar (mobile) & live tick ----------
