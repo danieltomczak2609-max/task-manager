@@ -429,6 +429,7 @@
       <div class="ftop"><button data-act="go" data-view="home">← Zurück</button><span>${isRun ? '<span class="live-dot"></span>' : ''}Fokus · ${esc(q ? q.name : 'Sonstiges')}</span></div>
       <span class="pill"><i></i>${esc(q ? q.name : 'Keine Quest')}</span>
       <h2>${esc(task.title)}</h2>
+      ${task.notes && task.notes.trim() ? `<div class="fnotes" data-act="edit-task" data-id="${task.id}" title="Notizen bearbeiten">${esc(task.notes.trim())}</div>` : `<button class="fnotes-add" data-act="edit-task" data-id="${task.id}">+ Notiz</button>`}
       <div class="clock" data-live-focus="${task.id}">${fmtClock(taskTime(task.id))}</div>
       <div class="state">${isRun ? 'Läuft' : 'Pausiert'}</div>
       <div class="actions">
