@@ -368,7 +368,9 @@
       </div>
       <div class="plan-scroll">${days.map((d) => {
         const dt = fromISO(d);
-        const list = tasksOn(d, (x) => !filter || (filter === 'none' ? !x.questId : x.questId === filter));
+        const hasQ = (x) => !!(x.questId && getQuest(x.questId));
+        const list = tasksOn(d, (x) => !filter || (filter === 'none' ? !x.questId : x.questId === filter))
+          .sort((x, y) => (x.done - y.done) || (hasQ(y) - hasQ(x)) || x.order - y.order); // wie Home: erst Quest-Arbeit, dann Sonstiges
         const [a, b] = dayRange(d);
         const spent = timeIn(a, b);
         return `<div class="pcol${d === t ? ' today' : ''}${d < t ? ' past' : ''}">
