@@ -126,7 +126,7 @@
   const overlap = (s, a, b) => Math.max(0, Math.min(sEnd(s), b) - Math.max(s.start, a));
   const taskTime = (id) => state.sessions.reduce((sum, s) => sum + (s.taskId === id ? sEnd(s) - s.start : 0), 0);
   function timeIn(a, b, pred = () => true) { return state.sessions.reduce((sum, s) => sum + (pred(s) ? overlap(s, a, b) : 0), 0); }
-  const isQuestSession = (s) => { const q = sQuest(s); return !!(q && getQuest(q)); };
+  const isQuestSession = (s) => { if (s.work || sQuest(s) === 'q-work') return false; const q = sQuest(s); return !!(q && getQuest(q)); };
   const questTimeIn = (a, b) => timeIn(a, b, isQuestSession);
 
   function tasksOn(iso, filter = () => true) {
@@ -245,6 +245,7 @@
   // ================= Rendering =================
   const TITLES = { home: 'Home', inbox: 'Eingang', plan: 'Plan', calendar: 'Kalender', focus: 'Fokus', quests: 'Quests', review: 'Review' };
   function render() {
+    ensureWork();
     const v = ui.view;
     HOUR_PX = calcHourPx();
     $$('[data-act="go"]').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
@@ -366,18 +367,84 @@
     clusters.forEach((c) => c.items.forEach((it) => (it.n = c.lanes.length)));
     return { items, dayA: a };
   }
+  // ---------- Feste Zeiten (Arbeit) ----------
+  const DEFAULT_WORK = { enabled: true, holidaysOff: true, label: 'Matrix-Sklavenarbeit', start: '07:00', end: '15:00', days: [1, 2, 3, 4, 5], from: '2026-10-01', to: '2027-10-01' };
+  // Gesetzliche Feiertage (bundesweit + Rheinland-Pfalz: Fronleichnam, Allerheiligen)
+  const easter = (y) => { const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451), mo = Math.floor((h + l - 7 * m + 114) / 31), da = ((h + l - 7 * m + 114) % 31) + 1; return toISO(new Date(y, mo - 1, da)); };
+  const HOL_CACHE = {};
+  function holidaysOf(y) {
+    if (HOL_CACHE[y]) return HOL_CACHE[y];
+    const e = easter(y), m = {};
+    m[`${y}-01-01`] = 'Neujahr'; m[addDays(e, -2)] = 'Karfreitag'; m[addDays(e, 1)] = 'Ostermontag'; m[`${y}-05-01`] = 'Tag der Arbeit';
+    m[addDays(e, 39)] = 'Christi Himmelfahrt'; m[addDays(e, 50)] = 'Pfingstmontag'; m[addDays(e, 60)] = 'Fronleichnam';
+    m[`${y}-10-03`] = 'Tag der Deutschen Einheit'; m[`${y}-11-01`] = 'Allerheiligen'; m[`${y}-12-25`] = '1. Weihnachtstag'; m[`${y}-12-26`] = '2. Weihnachtstag';
+    return (HOL_CACHE[y] = m);
+  }
+  const holidayOn = (iso) => holidaysOf(Number(iso.slice(0, 4)))[iso] || null;
+  const getWork = () => ({ ...DEFAULT_WORK, ...(state.settings.work || {}) });
+  const hmToH = (hm) => { const [h, m] = String(hm || '0:0').split(':').map(Number); return (h || 0) + (m || 0) / 60; };
+  function workOn(iso) {
+    const w = getWork();
+    if (!w.enabled || (w.from && iso < w.from) || (w.to && iso > w.to) || (w.skip || []).includes(iso)) return null;
+    if (!w.days.includes(fromISO(iso).getDay())) return null;
+    if (w.holidaysOff && holidayOn(iso)) return null;
+    const a = hmToH(w.start), b = hmToH(w.end);
+    return b > a ? { ...w, a, b } : null;
+  }
+
+  // Arbeitszeit wird nach Feierabend automatisch als Zeit der Quest „Matrix-Sklavenarbeit“ eingetragen
+  // (feste IDs → keine Duplikate zwischen Mac und Handy).
+  const WORK_QID = 'q-work';
+  const workSid = (iso) => `work_${iso}`;
+  const atHour = (iso, h) => { const d = fromISO(iso); d.setHours(Math.floor(h), Math.round((h % 1) * 60), 0, 0); return d.getTime(); };
+  function ensureWork() {
+    const w = getWork(); if (!w.enabled) return;
+    let ch = false;
+    if (!getQuest(WORK_QID) && !state.deleted[WORK_QID]) {
+      state.quests.push({ id: WORK_QID, name: 'Matrix-Sklavenarbeit', description: 'Feste Arbeitszeit – wird automatisch gezählt, ohne Stoppuhr.', color: '#7c7c86', icon: '⛓', status: 'active', order: state.quests.length, createdAt: now() });
+      ch = true;
+    }
+    const t = todayISO(), last = w.to && w.to < t ? w.to : t, nowMs = now();
+    const have = new Set(state.sessions.map((x) => x.id));
+    for (let d = w.from || t; d <= last; d = addDays(d, 1)) {
+      const wk = workOn(d); if (!wk) continue;
+      const id = workSid(d);
+      if (have.has(id) || state.deleted[id]) continue;
+      const end = atHour(d, wk.b); if (end > nowMs) continue;
+      state.sessions.push({ id, taskId: null, questId: WORK_QID, start: atHour(d, wk.a), end, manual: true, work: true });
+      ch = true;
+    }
+    if (ch) save();
+  }
+  function skipWorkDay(iso) {
+    const w = getWork();
+    state.settings.work = { ...w, skip: [...new Set([...(w.skip || []), iso])] };
+    const i = state.sessions.findIndex((x) => x.id === workSid(iso));
+    const removed = i >= 0 ? state.sessions.splice(i, 1)[0] : null;
+    commit();
+    toast(`${w.label} am ${fmtDay(iso)} entfernt`, () => {
+      const w2 = getWork(); state.settings.work = { ...w2, skip: (w2.skip || []).filter((x) => x !== iso) };
+      if (removed) state.sessions.push(removed);
+      commit();
+    });
+  }
+
   function dayColumn(iso) {
     const { items, dayA } = layoutBlocks(iso);
     const isToday = iso === todayISO();
     let html = `<div class="daycol${isToday ? ' today' : ''}" style="height:${24 * HOUR_PX}px" data-day="${iso}">`;
     for (let h = 1; h < 24; h++) html += `<div class="hline" style="top:${h * HOUR_PX}px"></div>`;
+    const wk = workOn(iso);
+    const hol = holidayOn(iso);
+    if (hol && getWork().holidaysOff) html += `<div class="holiday" style="top:${7 * HOUR_PX}px">🎉 ${esc(hol)}</div>`;
+    if (wk && !state.sessions.some((x) => x.id === workSid(iso))) html += `<div class="fixblock" data-act="edit-work" style="top:${wk.a * HOUR_PX}px;height:${(wk.b - wk.a) * HOUR_PX - 2}px" title="${esc(wk.label)} ${wk.start}–${wk.end} · wird nach Feierabend automatisch gezählt"><button class="bx" data-act="work-skip" data-day="${iso}" title="An diesem Tag frei (Urlaub)">×</button><div class="bt">${esc(wk.label)}</div><div class="br">${wk.start} – ${wk.end}</div></div>`;
     for (const it of items) {
       const top = ((it.a - dayA) / 3600000) * HOUR_PX;
       const hgt = Math.max(15, ((it.b - it.a) / 3600000) * HOUR_PX - 2);
       const t = getTask(it.s.taskId);
       const w = 100 / it.n;
-      html += `<div class="block${it.s.end == null ? ' live' : ''}" data-act="edit-session" data-id="${it.s.id}" style="--qc:${qColor(sQuest(it.s))};top:${top}px;height:${hgt}px;left:calc(${it.lane * w}% + 3px);width:calc(${w}% - 6px)" title="${esc(t?.title || 'Gelöschte Aufgabe')} · ${fmtHM(it.s.start)}–${it.s.end == null ? 'läuft' : fmtHM(it.s.end)}">
-        <div class="bt">${esc(t?.title || 'Gelöschte Aufgabe')}</div>${hgt > 30 ? `<div class="br">${fmtHM(it.s.start)} – ${it.s.end == null ? 'jetzt' : fmtHM(it.s.end)}</div>` : ''}</div>`;
+      html += `<div class="block${it.s.end == null ? ' live' : ''}${it.s.work ? ' workblock' : ''}" data-act="edit-session" data-id="${it.s.id}" style="--qc:${qColor(sQuest(it.s))};top:${top}px;height:${hgt}px;left:calc(${it.lane * w}% + 3px);width:calc(${w}% - 6px)" title="${esc(t?.title || 'Gelöschte Aufgabe')} · ${fmtHM(it.s.start)}–${it.s.end == null ? 'läuft' : fmtHM(it.s.end)}">
+        ${it.s.work ? `<button class="bx" data-act="work-skip" data-day="${iso}" title="An diesem Tag frei (Urlaub)">×</button>` : ''}<div class="bt">${esc(t?.title || (it.s.work ? getWork().label : 'Gelöschte Aufgabe'))}</div>${hgt > 30 ? `<div class="br">${fmtHM(it.s.start)} – ${it.s.end == null ? 'jetzt' : fmtHM(it.s.end)}</div>` : ''}</div>`;
     }
     if (isToday) { const d = new Date(); html += `<div class="nowline" style="top:${(d.getHours() + d.getMinutes() / 60) * HOUR_PX}px"></div>`; }
     return html + '</div>';
@@ -423,6 +490,7 @@
         const spent = timeIn(a, b);
         return `<div class="pcol${d === t ? ' today' : ''}${d < t ? ' past' : ''}">
           <div class="pcol-head"><span class="dn">${WD[dt.getDay()]} ${dt.getDate()}</span>${spent ? `<small>${fmtDur(spent)}</small>` : ''}</div>
+          ${workOn(d) ? `<div class="pcol-work" data-act="edit-work"><span>⛓ ${esc(getWork().label)} ${getWork().start}–${getWork().end}</span><button class="bx" data-act="work-skip" data-day="${d}" title="An diesem Tag frei (Urlaub)">×</button></div>` : ''}
           <form class="addrow" data-form="add" data-date="${d}" data-mode="plan"><input placeholder="Aufgabe… (#Quest)" maxlength="200" /></form>
           <div class="tlist" data-drop-date="${d}">${list.map((x) => taskCard(x)).join('')}</div>
         </div>`;
@@ -836,6 +904,7 @@
         d.close(); commit();
       };
       if (s) $('#del', d).onclick = () => {
+        if (s.work) { d.close(); skipWorkDay(s.id.slice(5)); return; }
         const idx = state.sessions.indexOf(s); state.sessions.splice(idx, 1); d.close(); commit();
         toast('Zeiteintrag gelöscht', () => { state.sessions.splice(idx, 0, s); commit(); });
       };
@@ -873,6 +942,15 @@
     openDialog(`<h2>Einstellungen</h2>
       <div class="field"><label>Wochenziel Quest-Stunden</label><input type="number" id="wt" min="1" max="100" value="${state.settings.weeklyTarget}" /></div>
       <hr class="sep" />
+      <div class="field" id="workf"><label>Feste Zeit im Kalender (grau, zählt zu keiner Quest)</label>
+        <label class="chkline"><input type="checkbox" id="w-on" ${getWork().enabled ? 'checked' : ''}/> anzeigen als <input id="w-label" value="${esc(getWork().label)}" maxlength="30" style="width:120px" /></label>
+        <div class="wrow"><input type="time" id="w-start" value="${getWork().start}" /> bis <input type="time" id="w-end" value="${getWork().end}" /></div>
+        <label class="chkline"><input type="checkbox" id="w-hol" ${getWork().holidaysOff ? 'checked' : ''}/> an Feiertagen frei (Rheinland-Pfalz)</label>
+        <div class="wdays">${[1, 2, 3, 4, 5, 6, 0].map((n) => `<label><input type="checkbox" data-wd="${n}" ${getWork().days.includes(n) ? 'checked' : ''}/>${WD[n]}</label>`).join('')}</div>
+        <div class="wrow">vom <input type="date" id="w-from" value="${getWork().from}" /> bis <input type="date" id="w-to" value="${getWork().to}" /></div>
+        <p class="small muted">Wird nach Feierabend automatisch als Zeit der Quest „Matrix-Sklavenarbeit“ gezählt – ohne Stoppuhr. Urlaub: im Kalender oder Plan aufs × am Block tippen.${(getWork().skip || []).length ? ` Freie Tage: ${(getWork().skip || []).slice().sort().map((x) => fmtDay(x)).join(', ')} <button type="button" class="fn-link" id="w-unskip">alle zurücksetzen</button>` : ''}</p>
+      </div>
+      <hr class="sep" />
       <div class="field"><label>Mac & Handy synchronisieren</label>
         ${sync ? `<p class="small muted" style="margin-top:0">Status: <b style="color:var(--text)">${syncLabel()}</b>. Auf weiteren Geräten einfach mit demselben Sync-Passwort anmelden – oder diesen Link öffnen:</p>
           <div class="keybox" id="synclink">${esc(link)}</div>
@@ -890,6 +968,17 @@
         <button class="btn" id="help">⌨ Tastenkürzel</button></div></div>
       <div class="dlg-actions"><button class="btn gold" data-close>Fertig</button></div>`, (d) => {
       $('#wt', d).onchange = (e) => { state.settings.weeklyTarget = Math.max(1, Math.min(100, Number(e.target.value) || 20)); commit(); };
+      $('#w-unskip', d) && ($('#w-unskip', d).onclick = () => { state.settings.work = { ...getWork(), skip: [] }; commit(); d.close(); settingsDialog(); });
+      $('#workf', d).onchange = () => {
+        state.settings.work = {
+          ...getWork(),
+          enabled: $('#w-on', d).checked, holidaysOff: $('#w-hol', d).checked, label: $('#w-label', d).value.trim() || 'Arbeit',
+          start: $('#w-start', d).value || '07:00', end: $('#w-end', d).value || '15:00',
+          days: $$('[data-wd]', d).filter((x) => x.checked).map((x) => Number(x.dataset.wd)),
+          from: $('#w-from', d).value, to: $('#w-to', d).value,
+        };
+        commit();
+      };
       if (sync) {
         $('#copy', d).onclick = async () => { try { await navigator.clipboard.writeText(link); toast('Link kopiert'); } catch { const r = document.createRange(); r.selectNodeContents($('#synclink', d)); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Link markiert – jetzt kopieren'); } };
         $('#share', d) && ($('#share', d).onclick = () => navigator.share({ title: 'Quest Sync-Link', url: link }).catch(() => {}));
@@ -1036,6 +1125,8 @@
       case 'add-session': sessionDialog(null); break;
       case 'recurring': recurringDialog(); break;
       case 'settings': settingsDialog(); break;
+      case 'work-skip': skipWorkDay(el.dataset.day); break;
+      case 'edit-work': settingsDialog(); setTimeout(() => $('#workf')?.scrollIntoView({ block: 'center' }), 50); break;
       case 'sync-setup': syncPasswordDialog(); break;
       case 'palette': openPalette(); break;
       case 'showdone': ui.showDone = !ui.showDone; render(); break;
@@ -1256,5 +1347,5 @@
   else if (!localStorage.getItem('quest.syncPrompted') && !location.hash.includes('sync=')) setTimeout(() => { if (!sync && !dlg().open) syncPasswordDialog(true); }, 600);
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-  window.__q = { get state() { return state; }, mergeStates, doSync, go };
+  window.__q = { get state() { return state; }, get ui() { return ui; }, mergeStates, doSync, go };
 })();

@@ -480,3 +480,23 @@ html, body { overflow-x: hidden; }
   .bottomnav button { font-size: 9.5px; }
   .pcol.inbox { position: static; border-right: 0; }
 }
+
+/* ---------- Feste Zeiten (Arbeit) ---------- */
+.fixblock { position: absolute; left: 2px; right: 2px; z-index: 0; border-radius: 6px; padding: 4px 7px; overflow: hidden; cursor: pointer;
+  background: repeating-linear-gradient(135deg, rgba(255,255,255,.045) 0 8px, rgba(255,255,255,.02) 8px 16px); border: 1px solid rgba(255,255,255,.07); color: var(--dim); }
+.fixblock .bt { font-size: 12px; font-weight: 500; color: var(--muted); }
+.fixblock .br { font-size: 11px; }
+.daycol .block { z-index: 1; }
+.pcol-work { font-size: 11.5px; color: var(--dim); background: rgba(255,255,255,.035); border: 1px dashed var(--border-2); border-radius: 6px; padding: 3px 8px; margin: -4px 0 10px; cursor: pointer; }
+.chkline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); text-transform: none; letter-spacing: 0; margin-bottom: 8px; }
+.wrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 6px 0; }
+.wrow input, .chkline input[type=text], #w-label { width: auto; }
+.wdays { display: flex; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 6px 0; }
+.wdays label { display: inline-flex; align-items: center; gap: 4px; text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--muted); }
+
+.fixblock .bx, .block .bx, .pcol-work .bx { position: absolute; top: 2px; right: 3px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(255,255,255,.08); color: var(--muted); font-size: 14px; line-height: 20px; text-align: center; cursor: pointer; padding: 0; opacity: .75; }
+.fixblock .bx:hover, .block .bx:hover, .pcol-work .bx:hover { background: #c0453a; color: #fff; opacity: 1; }
+.block.workblock { background: repeating-linear-gradient(135deg, rgba(124,124,134,.22) 0 8px, rgba(124,124,134,.14) 8px 16px); }
+.pcol-work { position: relative; display: flex; align-items: center; padding-right: 28px; }
+.pcol-work .bx { top: 50%; transform: translateY(-50%); width: 18px; height: 18px; line-height: 18px; font-size: 13px; }
+.holiday { position: absolute; left: 4px; right: 4px; z-index: 0; font-size: 11.5px; color: var(--gold); opacity: .8; padding: 4px 6px; border: 1px dashed rgba(242,193,78,.35); border-radius: 6px; }
