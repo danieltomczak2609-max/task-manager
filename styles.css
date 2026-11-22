@@ -310,7 +310,8 @@ hr.sep { border: 0; border-top: 1px solid var(--border); margin: 18px 0; }
   color: var(--text); padding: 10px 14px; border-radius: 10px; display: flex; gap: 14px; align-items: center; z-index: 70;
   transition: transform .22s; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); max-width: 92vw;
 }
-.toast.show { transform: translate(-50%, 0); }
+.toast { visibility: hidden; opacity: 0; transform: translate(-50%, calc(100% + 140px)); transition: transform .22s, opacity .22s, visibility 0s .22s; }
+.toast.show { visibility: visible; opacity: 1; transform: translate(-50%, 0); transition: transform .22s, opacity .22s, visibility 0s; }
 .toast button { color: var(--gold); font-weight: 600; }
 
 .runbar { display: none; }

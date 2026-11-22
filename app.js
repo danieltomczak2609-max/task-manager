@@ -805,6 +805,8 @@
         ${sync ? `<p class="small muted" style="margin-top:0">Status: <b style="color:var(--text)">${syncLabel()}</b>. Auf weiteren Geräten einfach mit demselben Sync-Passwort anmelden – oder diesen Link öffnen:</p>
           <div class="keybox" id="synclink">${esc(link)}</div>
           <div class="dlg-actions" style="justify-content:flex-start"><button class="btn gold" id="copy">Link kopieren</button>${navigator.share ? '<button class="btn" id="share">Teilen…</button>' : ''}<button class="btn" id="syncnow">Jetzt synchronisieren</button><button class="btn danger" id="unlink">Trennen</button></div>
+          <div class="dlg-actions" style="justify-content:flex-start;margin-top:4px"><button class="btn" id="pwswitch">🔑 Sync-Passwort verwenden</button></div>
+          <p class="small muted">Zeigt ein anderes Gerät andere Aufgaben? Dann tippe auf beiden Geräten auf „Sync-Passwort verwenden“ und gib dasselbe Passwort ein – die Aufgaben beider Geräte werden dabei zusammengeführt, nichts geht verloren.</p>
           <p class="small muted">Wer diesen Link hat, kann deine Aufgaben sehen – teile ihn nur mit dir selbst.</p>`
         : `<p class="small muted" style="margin-top:0">Sync ist aus. Melde dich auf jedem Gerät einmal mit demselben Sync-Passwort an – danach gleichen sich Mac und Handy automatisch ab.</p>
           <div class="dlg-actions" style="justify-content:flex-start"><button class="btn gold" id="pwsetup">☁︎ Mit Sync-Passwort verbinden</button></div>`}
@@ -820,6 +822,7 @@
         $('#copy', d).onclick = async () => { try { await navigator.clipboard.writeText(link); toast('Link kopiert'); } catch { const r = document.createRange(); r.selectNodeContents($('#synclink', d)); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Link markiert – jetzt kopieren'); } };
         $('#share', d) && ($('#share', d).onclick = () => navigator.share({ title: 'Quest Sync-Link', url: link }).catch(() => {}));
         $('#syncnow', d).onclick = () => { doSync(); };
+        $('#pwswitch', d).onclick = () => { d.close(); syncPasswordDialog(); };
         $('#unlink', d).onclick = () => { if (!confirm('Dieses Gerät vom Sync trennen? Die Daten bleiben hier erhalten.')) return; sync = null; localStorage.removeItem(SYNC_KEY); setSyncStatus('off'); d.close(); };
       } else {
         $('#pwsetup', d).onclick = () => { d.close(); syncPasswordDialog(); };
@@ -1138,7 +1141,7 @@
           toast(hasLocal ? '☁︎ Verbunden – Daten zusammengeführt' : '☁︎ Verbunden – Daten geladen');
         } else toast('☁︎ Verbunden');
       } catch { toast('Verbindung fehlgeschlagen – wird erneut versucht'); }
-    } else toast('☁︎ Sync angelegt – auf dem anderen Gerät einfach dasselbe Passwort eingeben');
+    } else toast('☁︎ Sync angelegt – auf den anderen Geräten dasselbe Passwort eingeben');
     render(); doSync();
   }
   function handleHash() {
