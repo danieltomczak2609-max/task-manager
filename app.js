@@ -407,6 +407,38 @@
   }
 
   // ---------- Focus ----------
+  // Notizen: Zeilen wie "1. …", "- …", "* …" oder "[ ] …" werden zu abhakbaren Punkten.
+  const NOTE_ITEM = /^\s*(?:\d+[.)]|[-*•–]|\[[ xX]?\])\s+(.+)$/;
+  function noteLines(t) {
+    return (t.notes || '').replace(/\s+$/, '').split('\n').map((line, i) => {
+      const m = line.match(NOTE_ITEM);
+      return m ? { i, item: true, text: m[1].trim() } : { i, item: false, text: line };
+    });
+  }
+  function notesBlock(task) {
+    if (!task.notes || !task.notes.trim()) return `<button class="fnotes-add" data-act="edit-task" data-id="${task.id}">+ Notiz</button>`;
+    const lines = noteLines(task);
+    const checks = new Set(task.checks || []);
+    const items = lines.filter((l) => l.item);
+    const doneN = items.filter((l) => checks.has(l.text)).length;
+    const body = lines.map((l) => l.item
+      ? `<button class="fn-item${checks.has(l.text) ? ' on' : ''}" data-act="note-check" data-id="${task.id}" data-i="${l.i}" role="checkbox" aria-checked="${checks.has(l.text)}"><span class="fn-box">${checks.has(l.text) ? '✓' : ''}</span><span class="fn-text">${esc(l.text)}</span></button>`
+      : (l.text.trim() ? `<div class="fn-line">${esc(l.text)}</div>` : '<div class="fn-gap"></div>')).join('');
+    return `<div class="fnotes">
+      <div class="fn-head"><span>${items.length ? `${doneN} / ${items.length} erledigt` : 'Notizen'}</span><span>${doneN ? `<button class="fn-link" data-act="note-reset" data-id="${task.id}">Zurücksetzen</button> · ` : ''}<button class="fn-link" data-act="edit-task" data-id="${task.id}">Bearbeiten</button></span></div>
+      ${items.length ? `<div class="fn-bar"><i style="width:${Math.round((doneN / items.length) * 100)}%"></i></div>` : ''}
+      <div class="fn-body">${body}</div></div>`;
+  }
+  function toggleNoteCheck(id, idx) {
+    const t = getTask(id); if (!t) return;
+    const l = noteLines(t).find((x) => x.i === idx && x.item); if (!l) return;
+    const set = new Set(t.checks || []);
+    set.has(l.text) ? set.delete(l.text) : set.add(l.text);
+    const valid = new Set(noteLines(t).filter((x) => x.item).map((x) => x.text));
+    t.checks = [...set].filter((x) => valid.has(x));
+    commit();
+  }
+
   function renderFocus() {
     const r = running();
     const t = todayISO();
@@ -429,7 +461,7 @@
       <div class="ftop"><button data-act="go" data-view="home">← Zurück</button><span>${isRun ? '<span class="live-dot"></span>' : ''}Fokus · ${esc(q ? q.name : 'Sonstiges')}</span></div>
       <span class="pill"><i></i>${esc(q ? q.name : 'Keine Quest')}</span>
       <h2>${esc(task.title)}</h2>
-      ${task.notes && task.notes.trim() ? `<div class="fnotes" data-act="edit-task" data-id="${task.id}" title="Notizen bearbeiten">${esc(task.notes.trim())}</div>` : `<button class="fnotes-add" data-act="edit-task" data-id="${task.id}">+ Notiz</button>`}
+      ${notesBlock(task)}
       <div class="clock" data-live-focus="${task.id}">${fmtClock(taskTime(task.id))}</div>
       <div class="state">${isRun ? 'Läuft' : 'Pausiert'}</div>
       <div class="actions">
@@ -919,6 +951,8 @@
       case 'pause': pauseTimer(); break;
       case 'complete': completeTask(id); break;
       case 'edit-task': taskDialog(id); break;
+      case 'note-check': toggleNoteCheck(id, +el.dataset.i); break;
+      case 'note-reset': { const t = getTask(id); if (t) { t.checks = []; commit(); } break; }
       case 'edit-quest': questDialog(id); break;
       case 'new-quest': questDialog(null); break;
       case 'edit-session': sessionDialog(id); break;
