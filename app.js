@@ -133,7 +133,7 @@
     return state.tasks.filter((t) => t.date === iso && filter(t)).sort((a, b) => (a.done - b.done) || a.order - b.order);
   }
   function orderFor(date, pos) {
-    const list = state.tasks.filter((t) => t.date === date);
+    const list = state.tasks.filter((t) => (t.date || null) === (date || null));
     if (!list.length) return 0;
     return pos === 'bottom' ? Math.max(...list.map((t) => t.order)) + 1 : Math.min(...list.map((t) => t.order)) - 1;
   }
@@ -148,12 +148,46 @@
     return { title, questId };
   }
   function addTask({ title, questId = null, date = todayISO(), pos = ui.addPos }) {
+    date = date || null;
     const t = { id: uid(), title, notes: '', questId, date, done: false, doneAt: null, order: orderFor(date, pos), createdAt: now() };
     state.tasks.push(t);
     if (questId) ui.lastQuest = questId;
     commit();
     return t;
   }
+
+  // ---------- Eingang (Aufgaben ohne Tag) ----------
+  const inboxTasks = () => state.tasks.filter((t) => !t.date && !t.done).sort((a, b) => a.order - b.order);
+  const WD_WORDS = { so: 0, sonntag: 0, mo: 1, montag: 1, di: 2, dienstag: 2, mi: 3, mittwoch: 3, do: 4, donnerstag: 4, fr: 5, freitag: 5, sa: 6, samstag: 6 };
+  // Erkennt "heute", "morgen", "übermorgen", "nächste Woche", Wochentage ("fr", "Freitag") und "12.12." im Text.
+  function parseWhen(text) {
+    const t = todayISO(); let date = null;
+    const take = (d) => { if (!date) date = d; return ' '; };
+    let s = ' ' + text + ' ';
+    s = s.replace(/\s(nächste|naechste)\s+woche(?=\s)/giu, () => { const d = fromISO(t); return take(addDays(t, ((8 - d.getDay()) % 7) || 7)); });
+    s = s.replace(/\s(übermorgen|uebermorgen)(?=\s)/giu, () => take(addDays(t, 2)));
+    s = s.replace(/\smorgen(?=\s)/giu, () => take(addDays(t, 1)));
+    s = s.replace(/\sheute(?=\s)/giu, () => take(t));
+    s = s.replace(/\s(\d{1,2})\.(\d{1,2})\.(\d{2,4})?(?=\s)/gu, (m, dd, mm, yy) => {
+      const now_ = fromISO(t); let y = yy ? (yy.length === 2 ? 2000 + +yy : +yy) : now_.getFullYear();
+      let d = new Date(y, +mm - 1, +dd); if (d.getMonth() !== +mm - 1) return m;
+      if (!yy && toISO(d) < t) d = new Date(y + 1, +mm - 1, +dd);
+      return take(toISO(d));
+    });
+    s = s.replace(/\s(sonntag|mo|montag|di|dienstag|mi|mittwoch|do|donnerstag|fr|freitag|sa|samstag)\.?(?=\s)/giu, (m, w) => {
+      const diff = (WD_WORDS[w.toLowerCase()] - fromISO(t).getDay() + 7) % 7 || 7;
+      return take(addDays(t, diff));
+    });
+    return { title: s.replace(/\s+/g, ' ').trim(), date };
+  }
+  function scheduleTask(id, date) {
+    const t = getTask(id); if (!t) return;
+    const prev = t.date || null, prevOrder = t.order;
+    t.date = date || null; t.order = orderFor(t.date, 'bottom');
+    commit();
+    toast(date ? `→ ${date === todayISO() ? 'Heute' : fmtDay(date)} eingeplant` : '📥 Zurück in den Eingang', () => { t.date = prev; t.order = prevOrder; commit(); });
+  }
+  const ageLabel = (ms) => { const d = Math.floor((now() - ms) / 86400000); return d < 1 ? 'neu' : d === 1 ? 'seit gestern' : d < 14 ? `seit ${d} Tagen` : `seit ${Math.floor(d / 7)} Wochen`; };
 
   // Timer
   function startTask(id) {
@@ -209,7 +243,7 @@
   }
 
   // ================= Rendering =================
-  const TITLES = { home: 'Home', plan: 'Plan', calendar: 'Kalender', focus: 'Fokus', quests: 'Quests', review: 'Review' };
+  const TITLES = { home: 'Home', inbox: 'Eingang', plan: 'Plan', calendar: 'Kalender', focus: 'Fokus', quests: 'Quests', review: 'Review' };
   function render() {
     const v = ui.view;
     HOUR_PX = calcHourPx();
@@ -219,10 +253,12 @@
     const keepScroll = view.querySelector('.cal-wrap, .timeline-card');
     const sc = keepScroll ? keepScroll.scrollTop : null;
     const planSc = view.querySelector('.plan-scroll')?.scrollLeft;
-    view.innerHTML = ({ home: renderHome, plan: renderPlan, calendar: renderCalendar, focus: renderFocus, quests: renderQuests, review: renderReview }[v] || renderHome)();
+    view.innerHTML = ({ home: renderHome, inbox: renderInbox, plan: renderPlan, calendar: renderCalendar, focus: renderFocus, quests: renderQuests, review: renderReview }[v] || renderHome)();
     const wrap = view.querySelector('.cal-wrap, .timeline-card');
     if (wrap) wrap.scrollTop = sc ?? Math.max(0, 7 * HOUR_PX - 10);
     const ps = view.querySelector('.plan-scroll'); if (ps && planSc != null) ps.scrollLeft = planSc;
+    const nIn = inboxTasks().length;
+    $$('[data-badge="inbox"]').forEach((b) => { b.textContent = nIn ? (nIn > 99 ? '99+' : nIn) : ''; });
     renderRunbar();
     tick();
   }
@@ -233,6 +269,12 @@
     const time = taskTime(t.id);
     return `<div class="tcard${t.done ? ' done' : ''}${isRun ? ' running' : ''}" data-task="${t.id}" draggable="true" style="--qc:${q ? q.color : '#3a3a40'}">
       <div class="tc-title" data-act="edit-task" data-id="${t.id}">${esc(t.title) || '<i>Ohne Titel</i>'}</div>
+      ${opts.inbox ? `<div class="tc-sched">
+        <span class="age${now() - (t.createdAt || now()) > 14 * 86400000 ? ' old' : ''}">${ageLabel(t.createdAt || now())}</span>
+        <button data-act="sched" data-id="${t.id}" data-when="0">Heute</button>
+        <button data-act="sched" data-id="${t.id}" data-when="1">Morgen</button>
+        <label class="pickday" title="Tag wählen">📅<input type="date" data-role="schedpick" data-id="${t.id}" min="${todayISO()}" /></label>
+      </div>` : ''}
       <div class="tc-meta">
         <button class="chk${t.done ? ' on' : ''}" data-act="toggle" data-id="${t.id}" aria-label="Erledigt">✓</button>
         ${opts.noQuest ? '' : `<span class="qchip"><i></i>${q ? esc(q.name) : 'Keine Quest'}</span>`}
@@ -289,7 +331,8 @@
       </div>
       <div class="home-grid">
         <div>
-          ${overdue.length ? `<div class="overdue-hint">⏳ ${overdue.length} offene Aufgabe${overdue.length > 1 ? 'n' : ''} aus den letzten Tagen<button data-act="move-overdue">Auf heute holen</button></div>` : ''}
+          ${overdue.length ? `<div class="overdue-hint">⏳ ${overdue.length} offene Aufgabe${overdue.length > 1 ? 'n' : ''} aus den letzten Tagen<button data-act="move-overdue">Auf heute holen</button><button data-act="overdue-inbox" style="margin-left:0">In den Eingang</button></div>` : ''}
+          ${inboxTasks().length ? `<div class="overdue-hint inbox-hint">📥 ${inboxTasks().length} Aufgabe${inboxTasks().length > 1 ? 'n' : ''} im Eingang warten auf einen Tag<button data-act="go" data-view="inbox">Einplanen</button></div>` : ''}
           ${!sync ? `<div class="overdue-hint">☁︎ Sync ist aus – Mac und Handy zeigen noch nicht dieselben Aufgaben.<button data-act="sync-setup">Jetzt verbinden</button></div>` : ''}
           ${!state.quests.length ? `<div class="overdue-hint">✦ Lege zuerst deine großen Ziele als <b>Quests</b> an – jede Aufgabe zahlt dann auf eine Quest ein.<button data-act="new-quest">Quest anlegen</button></div>` : ''}
           <div class="section">
@@ -366,7 +409,12 @@
           <button class="btn" data-act="recurring">↻ Wiederkehrend</button>
         </div>
       </div>
-      <div class="plan-scroll">${days.map((d) => {
+      <div class="plan-scroll">
+        <div class="pcol inbox">
+          <div class="pcol-head"><span class="dn">📥 Eingang</span><small>${inboxTasks().length || ''}</small></div>
+          <form class="addrow" data-form="add" data-date="" data-mode="inbox"><input placeholder="Sammeln… (#Quest, morgen, fr)" maxlength="200" /></form>
+          <div class="tlist" data-drop-date="">${inboxTasks().filter((x) => !filter || (filter === 'none' ? !x.questId : x.questId === filter)).map((x) => taskCard(x)).join('') || '<div class="empty">Ohne Tag – zieh Aufgaben hierher, wenn sie noch warten können.</div>'}</div>
+        </div>${days.map((d) => {
         const dt = fromISO(d);
         const hasQ = (x) => !!(x.questId && getQuest(x.questId));
         const list = tasksOn(d, (x) => !filter || (filter === 'none' ? !x.questId : x.questId === filter))
@@ -379,6 +427,30 @@
           <div class="tlist" data-drop-date="${d}">${list.map((x) => taskCard(x)).join('')}</div>
         </div>`;
       }).join('')}</div>`;
+  }
+
+  // ---------- Eingang ----------
+  function renderInbox() {
+    const all = inboxTasks();
+    const f = ui.inboxFilter || '';
+    const match = (x) => !f || (f === 'none' ? !getQuest(x.questId) : x.questId === f);
+    const list = all.filter(match);
+    const qs = activeQuests().filter((q) => all.some((x) => x.questId === q.id));
+    const noneN = all.filter((x) => !getQuest(x.questId)).length;
+    const chip = (val, label, n, color) => `<button class="fchip${f === val ? ' on' : ''}" data-act="inbox-filter" data-v="${val}"${color ? ` style="--qc:${color}"` : ''}>${color ? '<i></i>' : ''}${esc(label)} <small>${n}</small></button>`;
+    return `<div class="page-head">
+        <div><h1>Eingang</h1><div class="sub">Sammle hier alles, was ansteht – ohne Tag. Plane es ein, sobald es dran ist.</div></div>
+      </div>
+      <div class="inbox-wrap">
+        <form class="addrow capture" data-form="add" data-date="" data-mode="inbox">
+          <input placeholder="Was steht an? Enter drücken – fertig." maxlength="200" />
+        </form>
+        <div class="capture-tip">Tipp: <b>#Quest</b> ordnet zu · <b>morgen</b>, <b>fr</b> oder <b>12.12.</b> plant direkt ein · alles andere bleibt hier.</div>
+        ${all.length ? `<div class="fchips">${chip('', 'Alle', all.length)}${qs.map((q) => chip(q.id, q.name, all.filter((x) => x.questId === q.id).length, q.color)).join('')}${noneN && qs.length ? chip('none', 'Ohne Quest', noneN) : ''}</div>` : ''}
+        <div class="tlist" data-drop-date="">${list.map((x) => taskCard(x, { inbox: true })).join('')}</div>
+        ${!all.length ? '<div class="empty-big"><h3>Eingang leer ✓</h3>Alles hat seinen Tag. Neue Ideen und To-dos einfach oben eintippen.</div>' : ''}
+        ${all.length ? '<div class="small muted" style="margin-top:14px">Ziehe Aufgaben im <b>Plan</b> aus der Eingang-Spalte direkt auf einen Tag – oder nutze die Knöpfe oben.</div>' : ''}
+      </div>`;
   }
 
   // ---------- Calendar ----------
@@ -660,7 +732,7 @@
       <div class="field"><label>Titel</label><input type="text" name="title" value="${esc(t.title)}" required maxlength="200" /></div>
       <div class="row2">
         <div class="field"><label>Quest</label><select name="quest">${questOptions(t.questId)}</select></div>
-        <div class="field"><label>Tag</label><input type="date" name="date" value="${t.date || ''}" /></div>
+        <div class="field"><label>Tag <small class="muted">(leer = Eingang)</small></label><input type="date" name="date" value="${t.date || ''}" /></div>
       </div>
       <div class="field"><label>Notizen</label><textarea name="notes" rows="3">${esc(t.notes || '')}</textarea></div>
       <div class="field"><label>Gemessene Zeit: ${fmtDur(tm)}</label>
@@ -891,7 +963,7 @@
   }
 
   function helpDialog() {
-    const rows = [['1 – 6', 'Home, Plan, Kalender, Fokus, Quests, Review'], ['⌘K oder /', 'Suchen & springen'], ['N', 'Neue Aufgabe'], ['Leertaste', 'Fokus: Start / Pause'], ['Enter', 'Fokus: Abschließen'], ['Esc', 'Schließen / zurück']];
+    const rows = [['1 – 7', 'Home, Eingang, Plan, Kalender, Fokus, Quests, Review'], ['E', 'Etwas in den Eingang werfen'], ['⌘K oder /', 'Suchen & springen'], ['N', 'Neue Aufgabe'], ['Leertaste', 'Fokus: Start / Pause'], ['Enter', 'Fokus: Abschließen'], ['Esc', 'Schließen / zurück']];
     openDialog(`<h2>Tastenkürzel</h2><table style="width:100%;font-size:13px">${rows.map(([k, v]) => `<tr><td style="padding:5px 0"><kbd class="pill">${k}</kbd></td><td class="muted">${v}</td></tr>`).join('')}</table>
       <p class="small muted">Tipp: Beim Hinzufügen kannst du mit <b>#Questname</b> direkt eine Quest zuordnen.</p>
       <div class="dlg-actions"><button class="btn gold" data-close>OK</button></div>`);
@@ -975,6 +1047,12 @@
       case 'cal-today': ui.calWeek = weekStart(todayISO()); render(); break;
       case 'rev-shift': ui.reviewWeek = addDays(ui.reviewWeek, Number(el.dataset.n)); render(); break;
       case 'rev-today': ui.reviewWeek = weekStart(todayISO()); render(); break;
+      case 'sched': { const n = Number(el.dataset.when); scheduleTask(id, addDays(todayISO(), n)); break; }
+      case 'inbox-filter': ui.inboxFilter = el.dataset.v; saveUI(); render(); break;
+      case 'overdue-inbox': {
+        const t = todayISO(); const list = state.tasks.filter((x) => !x.done && x.date && x.date < t);
+        list.forEach((x) => { x.date = null; x.order = orderFor(null, 'bottom'); }); commit(); toast(`📥 ${list.length} Aufgabe(n) in den Eingang gelegt`); break;
+      }
       case 'move-overdue': {
         const t = todayISO(); const list = state.tasks.filter((x) => !x.done && x.date && x.date < t);
         list.forEach((x) => { x.date = t; x.order = orderFor(t, 'bottom'); }); commit(); toast(`${list.length} Aufgabe(n) auf heute verschoben`); break;
@@ -987,11 +1065,14 @@
     e.preventDefault();
     const input = $('input', f); const raw = input.value.trim(); if (!raw) return;
     let { title, questId } = parseQuestTag(raw);
+    let date = f.dataset.date || null;
+    if (f.dataset.mode === 'inbox') { const w = parseWhen(title); if (w.title) { title = w.title; if (w.date) date = w.date; } }
     if (!title) return;
     if (!questId && f.dataset.mode === 'quest') questId = $('select[data-role="quest"]', f)?.value || null;
     if (!questId && f.dataset.mode === 'plan' && ui.planFilter && ui.planFilter !== 'none') questId = ui.planFilter;
     if (f.dataset.mode === 'quest' && !questId && !state.quests.length) { toast('Lege zuerst eine Quest an'); questDialog(null); return; }
-    const t = addTask({ title, questId, date: f.dataset.date });
+    const t = addTask({ title, questId, date });
+    if (f.dataset.mode === 'inbox' && date) toast(`→ ${date === todayISO() ? 'Heute' : fmtDay(date)} eingeplant`, () => { t.date = null; t.order = orderFor(null, 'bottom'); commit(); });
     if (f.dataset.mode === 'focus') { ui.focusPick = t.id; render(); return; }
     const again = $(`form[data-form="add"][data-date="${f.dataset.date}"][data-mode="${f.dataset.mode}"] input`);
     again?.focus();
@@ -1002,6 +1083,7 @@
     if (r === 'planfilter') { ui.planFilter = e.target.value; render(); }
     if (r === 'focuspick') { ui.focusPick = e.target.value; render(); }
     if (r === 'quest') ui.lastQuest = e.target.value;
+    if (r === 'schedpick' && e.target.value) scheduleTask(e.target.dataset.id, e.target.value);
   });
 
   document.addEventListener('input', (e) => {
@@ -1031,15 +1113,15 @@
     if (!dragId) return;
     const list = e.target.closest?.('[data-drop-date]'); if (!list) return;
     e.preventDefault();
-    const t = getTask(dragId); const date = list.dataset.dropDate;
+    const t = getTask(dragId); const date = list.dataset.dropDate || null;
     const over = e.target.closest('.tcard');
     if (over && over.dataset.task !== dragId) {
       const target = getTask(over.dataset.task);
-      const sameDay = state.tasks.filter((x) => x.date === target.date && x.id !== t.id).sort((a, b) => a.order - b.order);
+      const sameDay = state.tasks.filter((x) => (x.date || null) === (target.date || null) && x.id !== t.id).sort((a, b) => a.order - b.order);
       const i = sameDay.indexOf(target);
-      t.date = target.date;
+      t.date = target.date || null;
       t.order = i <= 0 ? target.order - 1 : (sameDay[i - 1].order + target.order) / 2;
-    } else if (t.date !== date) { t.date = date; t.order = orderFor(date, 'bottom'); }
+    } else if ((t.date || null) !== date) { t.date = date; t.order = orderFor(date, 'bottom'); }
     dragId = null; commit();
   });
 
@@ -1048,9 +1130,10 @@
     if (!$('#palette').hidden || dlg().open) return;
     if (isTyping()) { if (e.key === 'Escape') document.activeElement.blur(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const views = ['home', 'plan', 'calendar', 'focus', 'quests', 'review'];
-    if (/^[1-6]$/.test(e.key)) { go(views[Number(e.key) - 1]); return; }
+    const views = ['home', 'inbox', 'plan', 'calendar', 'focus', 'quests', 'review'];
+    if (/^[1-7]$/.test(e.key)) { go(views[Number(e.key) - 1]); return; }
     if (e.key === '/') { e.preventDefault(); openPalette(); return; }
+    if (e.key === 'e' || e.key === 'E') { e.preventDefault(); if (!['inbox', 'plan'].includes(ui.view)) go('inbox'); $('form[data-mode="inbox"] input')?.focus(); return; }
     if (e.key === 'n' || e.key === 'N') { e.preventDefault(); if (!['home', 'plan'].includes(ui.view)) go('home'); $('form[data-form="add"] input')?.focus(); return; }
     if (ui.view === 'focus') {
       if (e.key === ' ') { e.preventDefault(); const r = running(); if (r) pauseTimer(); else { const b = $('[data-act="start"]'); b && startTask(b.dataset.id); } }
