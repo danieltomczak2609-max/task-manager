@@ -225,17 +225,57 @@
     toast('Aufgabe gelöscht', () => { state.tasks.splice(idx, 0, t); commit(); });
   }
 
+  function deleteSeries(rid) {
+    const r = state.recurring.find((x) => x.id === rid); if (!r) return;
+    const snapR = [...state.recurring], snapT = [...state.tasks];
+    state.recurring = state.recurring.filter((x) => x.id !== rid);
+    state.tasks = state.tasks.filter((t) => !(t.recurringId === rid && !t.done));
+    const run = running(); if (run && run.taskId && !getTask(run.taskId)) stopSession(run);
+    commit();
+    toast(`Serie „${r.title}“ gelöscht`, () => { state.recurring = snapR; state.tasks = snapT; commit(); });
+  }
+  function seriesDeleteDialog(id) {
+    const t = getTask(id); if (!t) return;
+    openDialog(`<h2>Wiederkehrende Aufgabe löschen</h2>
+      <p class="muted">„${esc(t.title)}“ gehört zu einer Serie.</p>
+      <div class="dlg-actions">
+        <button type="button" class="btn" data-close>Abbrechen</button>
+        <button type="button" class="btn" id="one">Nur diesen Termin</button>
+        <button type="button" class="btn danger" id="all">Ganze Serie</button>
+      </div>`, (d) => {
+      $('#one', d).onclick = () => { d.close(); deleteTask(id); };
+      $('#all', d).onclick = () => { d.close(); deleteSeries(t.recurringId); };
+    });
+  }
+
   // Wiederkehrende Aufgaben (gleiche ID auf allen Geräten → keine Duplikate beim Sync)
   function ensureRecurring(fromISO_, toISO_) {
     let added = false;
     const start = fromISO_ < todayISO() ? todayISO() : fromISO_;
     for (const r of state.recurring) {
+      // Notizen gehören zur Vorlage: einmalig aus der neuesten Instanz übernehmen
+      if (r.notes === undefined) {
+        const src = state.tasks.filter((t) => t.recurringId === r.id && (t.notes || '').trim()).sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0];
+        r.notes = src ? src.notes : ''; added = true;
+      }
+      // Einmalig: zuletzt bearbeitete Instanz (z. B. nachträglich Quest gesetzt) wird zur Vorlage
+      if (!r.synced) {
+        const ed = state.tasks.filter((t) => t.recurringId === r.id && (t.questId !== (r.questId || null) || t.title !== r.title)).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+        if (ed) { r.questId = ed.questId || null; r.title = ed.title; }
+        r.synced = 1; added = true;
+      }
+      for (const t of state.tasks) {
+        if (t.recurringId !== r.id || t.done) continue;
+        if (t.title !== r.title || (t.questId || null) !== (r.questId || null) || (r.notes && t.notes !== r.notes)) {
+          t.title = r.title; t.questId = r.questId || null; if (r.notes) t.notes = r.notes; added = true;
+        }
+      }
       const since = toISO(new Date(r.createdAt || 0));
       for (let d = start; d <= toISO_; d = addDays(d, 1)) {
         if (d < since || !r.days.includes(fromISO(d).getDay())) continue;
         const id = `r_${r.id}_${d}`;
         if (state.deleted[id] || getTask(id)) continue;
-        state.tasks.push({ id, title: r.title, notes: '', questId: r.questId || null, date: d, done: false, doneAt: null, order: -1000 + (r.order || 0), recurringId: r.id, createdAt: now() });
+        state.tasks.push({ id, title: r.title, notes: r.notes || '', questId: r.questId || null, date: d, done: false, doneAt: null, order: -1000 + (r.order || 0), recurringId: r.id, createdAt: now() });
         added = true;
       }
     }
@@ -815,9 +855,15 @@
       f.onsubmit = (e) => {
         e.preventDefault();
         t.title = f.title.value.trim() || t.title; t.questId = f.quest.value || null; t.date = f.date.value || null; t.notes = f.notes.value;
+        const rr = t.recurringId && state.recurring.find((x) => x.id === t.recurringId);
+        if (rr) { // Serie: Titel, Quest und Notizen gelten für alle offenen Termine
+          rr.title = t.title; rr.questId = t.questId; rr.notes = t.notes;
+          for (const o of state.tasks) if (o.recurringId === rr.id && !o.done) { o.title = t.title; o.questId = t.questId; o.notes = t.notes; }
+          toast('Für alle Termine der Serie übernommen');
+        }
         d.close(); commit();
       };
-      $('#del', d).onclick = () => { d.close(); deleteTask(id); };
+      $('#del', d).onclick = () => { d.close(); t.recurringId ? seriesDeleteDialog(id) : deleteTask(id); };
       $('#focusbtn', d).onclick = () => { d.close(); ui.focusPick = id; go('focus'); };
       $('#addmin', d).onclick = () => {
         const m = Number(f.addmin.value); if (!m) return;
@@ -929,10 +975,7 @@
         save(); ensureRecurring(todayISO(), addDays(todayISO(), 14)); render(); recurringDialog();
       };
       $$('[data-rdel]', d).forEach((b) => (b.onclick = () => {
-        const id = b.dataset.rdel;
-        state.recurring = state.recurring.filter((r) => r.id !== id);
-        state.tasks = state.tasks.filter((t) => !(t.recurringId === id && !t.done && t.date >= todayISO()));
-        commit(); recurringDialog();
+        d.close(); deleteSeries(b.dataset.rdel);
       }));
     });
   }
